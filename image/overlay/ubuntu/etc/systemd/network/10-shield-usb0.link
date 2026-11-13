@@ -1,0 +1,7 @@
+# USB-C usb0 presented as a plain NIC (network.usbc = "nic"): the SIL gives it
+# this MAC; name it usb0 as on Shield.
+[Match]
+MACAddress=52:54:00:5e:00:13
+
+[Link]
+Name=usb0

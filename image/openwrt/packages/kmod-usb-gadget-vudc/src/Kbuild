@@ -1,0 +1,14 @@
+# USB gadget stack + USB/IP virtual device controller, out of tree, for kernels
+# built with USB_GADGET=y but without libcomposite, the Ethernet functions or
+# USBIP_VUDC (OpenWrt armsr). Same module names and object lists as upstream
+# drivers/usb/gadget/{,function/}Makefile and drivers/usb/usbip/Makefile.
+# libcomposite only where the kernel does not have it built in (OpenWrt 25.12
+# armsr builds it in; 24.10 does not).
+ifneq ($(CONFIG_USB_LIBCOMPOSITE),y)
+obj-m += libcomposite.o
+endif
+obj-m += u_ether.o usb_f_ecm.o usbip-vudc.o
+libcomposite-y := usbstring.o config.o epautoconf.o composite.o functions.o configfs.o u_f.o
+usb_f_ecm-y := f_ecm.o
+usbip-vudc-y := vudc_dev.o vudc_sysfs.o vudc_tx.o vudc_rx.o vudc_transfer.o vudc_main.o
+ccflags-y += -I$(src)

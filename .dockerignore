@@ -1,0 +1,4 @@
+# The SIL host image needs only qemu/ (patched QEMU build); everything else is
+# mounted at run time.
+*
+!qemu/

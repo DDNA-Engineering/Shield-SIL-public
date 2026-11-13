@@ -1,0 +1,27 @@
+From f12c378effc74c0e18354cea2bc030f8f2f868b3 Mon Sep 17 00:00:00 2001
+From: SquadronConsult <michael@defense-dna.com>
+Date: Tue, 10 Nov 2026 04:32:36 +0000
+Subject: [PATCH 3/5] hw/misc/imx8mp_analog: report the i.MX 8M Plus DIGPROG
+ value
+
+0x00824010 decodes as an i.MX 8MQ; the 8M Plus reports 0x00824310.
+---
+ hw/misc/imx8mp_analog.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hw/misc/imx8mp_analog.c b/hw/misc/imx8mp_analog.c
+index 23ffae8..e0f0207 100644
+--- a/hw/misc/imx8mp_analog.c
++++ b/hw/misc/imx8mp_analog.c
+@@ -68,7 +68,7 @@ static void imx8mp_analog_reset(DeviceState *dev)
+     s->analog[ANALOG_SYS_PLL3_MNIT_CTRL] = 0x00280081;
+     s->analog[ANALOG_OSC_MISC_CFG] = 0x00000000;
+     s->analog[ANALOG_ANAMIX_PLL_MNIT_CTL] = 0x00000000;
+-    s->analog[ANALOG_DIGPROG] = 0x00824010;
++    s->analog[ANALOG_DIGPROG] = 0x00824310;
+ 
+     /* all PLLs need to be locked */
+     s->analog[ANALOG_AUDIO_PLL1_GEN_CTRL] |= ANALOG_PLL_LOCK;
+-- 
+2.43.0
+

@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-labelledby="t">
+  <title id="t">Shield SIL</title>
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1F6FEB"/>
+      <stop offset="1" stop-color="#0B3D91"/>
+    </linearGradient>
+  </defs>
+  <!-- shield body -->
+  <path d="M64 6 L112 22 V60 C112 90 92 110 64 122 C36 110 16 90 16 60 V22 Z"
+        fill="url(#g)" stroke="#0A2E6E" stroke-width="3" stroke-linejoin="round"/>
+  <!-- chip -->
+  <rect x="49" y="47" width="30" height="30" rx="4" fill="#FFFFFF"/>
+  <rect x="56" y="54" width="16" height="16" rx="2" fill="#0B3D91"/>
+  <g stroke="#FFFFFF" stroke-width="3" stroke-linecap="round">
+    <line x1="56" y1="40" x2="56" y2="47"/><line x1="64" y1="40" x2="64" y2="47"/><line x1="72" y1="40" x2="72" y2="47"/>
+    <line x1="56" y1="77" x2="56" y2="84"/><line x1="64" y1="77" x2="64" y2="84"/><line x1="72" y1="77" x2="72" y2="84"/>
+    <line x1="42" y1="54" x2="49" y2="54"/><line x1="42" y1="62" x2="49" y2="62"/><line x1="42" y1="70" x2="49" y2="70"/>
+    <line x1="79" y1="54" x2="86" y2="54"/><line x1="79" y1="62" x2="86" y2="62"/><line x1="79" y1="70" x2="86" y2="70"/>
+  </g>
+  <!-- the loop -->
+  <path d="M34 62 A30 30 0 0 1 88 44" fill="none" stroke="#5EE6A8" stroke-width="5" stroke-linecap="round"/>
+  <path d="M94 62 A30 30 0 0 1 40 80" fill="none" stroke="#5EE6A8" stroke-width="5" stroke-linecap="round"/>
+  <path d="M84 36 L92 46 L80 49 Z" fill="#5EE6A8"/>
+  <path d="M44 88 L36 78 L48 75 Z" fill="#5EE6A8"/>
+</svg>

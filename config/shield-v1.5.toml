@@ -1,0 +1,147 @@
+# Shield v1.5 hardware profile for the SIL.
+#
+# Values marked TBD are placeholders that must be confirmed against a real unit
+# before results are treated as authoritative (docs/assumptions.md).
+
+[profile]
+name = "shield-v1.5"
+hw_revision = "1.5"
+
+[image]
+# The software under test, picked by name from the image catalog (config/images/):
+#   openwrt-24.10.3  openwrt-25.12.3  ubuntu-26.04  openwrt-23.05.6
+# Pick another per run without editing this file:
+#   shield-sil --image ubuntu-26.04 up
+#   python -m pytest tests/system --sil-image ubuntu-26.04      (or SIL_IMAGE=...)
+# Build an image with: image/build.sh <name>     List them with: shield-sil images
+# The catalog entry supplies kernel, initrd, append, disk and [guest] settings.
+# Set name = "" to boot the settings below instead (see docs/swapping-images.md).
+name = "openwrt-24.10.3"
+qemu = "qemu-system-aarch64"
+machine = "virt"
+nic_model = "virtio-net-pci"
+extra_args = []
+# Used only when name = "" (or to override one key with --set image.<key>=...).
+# Relative paths are resolved from the repository root.
+kernel = ""
+initrd = ""
+firmware = ""
+append = ""
+disk = ""
+# raw | qcow2. Runs never modify the disk: each gets a copy-on-write overlay.
+disk_format = "raw"
+
+[guest]
+# How the harness talks to the image: "openwrt" or "linux" (see src/shield_sil/guest.py).
+# The catalog entry sets this for each image; keys here are defaults under it.
+# Any adapter default (shell_prompt, login_user, ready_command, ...) can be set.
+adapter = "openwrt"
+boot_timeout_s = 300
+# true when the image contains the SIL hardware agent (shield-hwd, shield-hw).
+# Tests that need it are skipped when false.
+hw_agent = true
+
+[compute]
+# i.MX8M Plus: quad-core Cortex-A53 @ 1.8 GHz.
+cpu_model = "cortex-a53"
+cpu_cores = 4
+cpu_mhz = 1800
+# 4 GB LPDDR4. TBD: confirm against the SoM part number.
+ram_mb = 4096
+# 32 GB eMMC. The disk image is grown to this size (sparse on the host).
+emmc_gb = 32
+
+[compute.cpu_cap]
+# Upper bound on host CPU the emulator may use, in host cores.
+# 4.0 = never more than four host cores, matching the four A53 cores.
+# TBD: calibrate with `shield-sil calibrate` against a real v1.5 benchmark.
+host_cores = 4.0
+# How the cap is enforced: "auto" picks cgroup v2, then cgroup v1, then a
+# SIGSTOP/SIGCONT duty-cycle throttle as a last resort.
+method = "auto"
+# Speed limit: one emulated core may not run faster than one Shield core.
+# Reference: Dhrystone 2.1 (GCC -O3) on Cortex-A53 measures ~2.96 DMIPS/MHz
+# per core (TI SPRAD45B, AM62x Benchmarks, sect. 2.1: 3557 DMIPS at 1.2 GHz).
+# Arm publishes no official A53 figure. At the i.MX8M Plus's 1.8 GHz that is
+# 3557 / 1200 * 1800 = 5336 DMIPS per core. From the datasheet clock and a
+# published A53 measurement, NOT measured on a Shield (docs/calibration.md).
+# 0 turns the limit and its test off.
+device_dmips_per_core = 5336
+# After boot, measure the guest with Dhrystone and throttle each vCPU until a
+# core is no faster than device_dmips_per_core.
+limit_speed = true
+
+[network]
+# Shield LAN gateway.
+lan_ip = "192.168.100.1"
+lan_prefix = 24
+# 2x 1 GbE RJ45 (one LAN, one WAN) + cellular via M.2.
+# Cellular data path: "modem" = the emulated EM7595's wwan0 (QMI raw IP over
+# USB/IP, driven by ModemManager), as on Shield; "nic" = a plain virtual NIC
+# (eth2) whose carrier the modem model drives, for images without Shield's
+# driver interfaces. Images set this in config/images/.
+cellular = "nic"
+# USB-C usb0 (Shield is a USB network device to a laptop, bridged into the
+# LAN), with a simulated laptop on the other end: "gadget" = Shield's USB
+# network gadget over USB/IP, "nic" = a plain NIC named usb0, "off" = no
+# laptop. Images set this in config/images/; pick another per run with
+# --set network.usbc=nic.
+usbc = "off"
+# Where the uplinks lead: "off" = the closed, repeatable simulated internet
+# (default; what the system tests expect), "host" = the real internet, through
+# this machine's own connection (NAT), on every uplink: wired WAN and cellular,
+# and so for the LAN, Wi-Fi and USB-C clients behind Shield. Links can still be
+# cut. Per run: ./sil up --internet, or --set network.internet=host.
+internet = "off"
+lan_ifname = "eth0"
+wan_ifname = "eth1"
+wwan_ifname = "eth2"
+# OpenWRT logical interface names (used by the openwrt guest adapter).
+lan_logical = "lan"
+wan_logical = "wan"
+wwan_logical = "wanb"  # Shield names the cellular uplink wanb
+link_rate_mbps = 1000
+
+[power]
+# TBD: placeholders, not measured. Replace with a real unit's idle power.
+idle_w_with_som = 3.0
+idle_w_with_cell = 4.0
+regulator_efficiency = 0.85
+# USB PD sink, 5/9/12/15/20 V at up to 5 A.
+pd_voltages = [5.0, 9.0, 12.0, 15.0, 20.0]
+pd_max_current_a = 5.0
+
+[battery]
+# 1S Li-ion 3.7 V nominal, 1 A charge current.
+cells_series = 1
+nominal_v = 3.7
+charge_current_a = 1.0
+# TBD: capacity not confirmed.
+capacity_mah = 3000
+# TBD: cell voltage at which the board browns out (placeholder, not measured).
+# There is no battery thermistor or fuel gauge that software reads.
+brownout_v = 3.30
+
+[thermal]
+# SoC die temperature (the i.MX8M Plus TMU zones Linux reads). Shield has no
+# fan and no board thermistor.
+ambient_c = 25.0
+# TBD: first-order model, tuned so ~3 W idle sits near 45 C. Replace with measured values.
+board_c_per_w = 6.5
+board_time_constant_s = 120.0
+
+[modem]
+# Stock 4G modem. The firmware string is a placeholder in Sierra's format,
+# not a real release.
+model = "Sierra Wireless EM7595"
+firmware = "SWIX55C_00.00.00.00"
+# 2x nano SIM + 1x eSIM.
+sim_slots = ["nano1", "nano2", "esim"]
+active_slot = "nano1"
+registration_time_s = 8.0
+# TBD: cold boot / reset until the module re-enumerates on USB.
+boot_time_s = 20.0
+
+[leds]
+# /sys/class/leds names on Shield.
+names = ["Heartbeat", "System", "User", "WAN", "WiFi", "ETH", "Battery"]

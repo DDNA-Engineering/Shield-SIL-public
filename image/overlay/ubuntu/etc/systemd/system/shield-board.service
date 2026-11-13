@@ -1,0 +1,14 @@
+# Shield's front-panel LEDs (uleds) and named GPIOs (gpio-sim), bridged to the
+# SIL's board models. Same agent as the OpenWrt images.
+[Unit]
+Description=Shield SIL board interfaces (LEDs, GPIOs)
+After=systemd-modules-load.service shield-hwd.service
+
+[Service]
+ExecCondition=/usr/sbin/shield-board --needed
+ExecStart=/usr/sbin/shield-board
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,8 @@
+# br-lan port: the LAN Ethernet port.
+[connection]
+id=lan-eth0
+type=ethernet
+interface-name=eth0
+controller=br-lan
+port-type=bridge
+autoconnect=true

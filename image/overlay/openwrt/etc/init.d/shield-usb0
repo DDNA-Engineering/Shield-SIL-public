@@ -1,0 +1,18 @@
+#!/bin/sh /etc/rc.common
+# Shield SIL: USB-C usb0 presented as a plain NIC (network.usbc = "nic").
+# The SIL gives that NIC a fixed MAC; name it usb0 as on Shield, before
+# netifd (START=20) adds usb0 to br-lan.
+
+START=12
+
+boot() {
+	for d in /sys/class/net/*; do
+		[ "$(cat "$d/address" 2>/dev/null)" = "52:54:00:5e:00:13" ] || continue
+		n=${d##*/}
+		[ "$n" = usb0 ] && return 0
+		ip link set "$n" down
+		ip link set "$n" name usb0 && logger -t shield-usb0 "$n renamed to usb0 (USB-C, plain NIC)"
+	done
+}
+
+start() { :; }

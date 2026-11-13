@@ -1,0 +1,65 @@
+From 896f163ed0248c0502e89b3b1c10068cac57ef1b Mon Sep 17 00:00:00 2001
+From: SquadronConsult <michael@defense-dna.com>
+Date: Tue, 10 Nov 2026 16:30:28 +0000
+Subject: [PATCH] hw/pci-host/designware: decode only the iATU TYPE field
+
+Region control 1 holds more than the transaction type: TD (bit 8), the
+function number and other attributes share the register. The model
+compared the whole register with the MEM type, so a guest that sets any
+other bit got its memory window mapped as a configuration window. Linux
+7.0 sets TD on every outbound region; on the i.MX 8M Plus every MMIO
+access to a device behind the root port then became a configuration
+access, and e1000e failed to probe ("Error getting PHY ID").
+
+Compare only the TYPE field. I/O regions are not modelled: leave both
+windows disabled for them instead of turning port accesses into
+configuration accesses.
+---
+ hw/pci-host/designware.c | 21 ++++++++++++++++++++-
+ 1 file changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/hw/pci-host/designware.c b/hw/pci-host/designware.c
+index 76fda63..6ec4945 100644
+--- a/hw/pci-host/designware.c
++++ b/hw/pci-host/designware.c
+@@ -44,7 +44,9 @@
+ #define DESIGNWARE_PCIE_ATU_VIEWPORT               0x900
+ #define DESIGNWARE_PCIE_ATU_REGION_INBOUND         BIT(31)
+ #define DESIGNWARE_PCIE_ATU_CR1                    0x904
++#define DESIGNWARE_PCIE_ATU_TYPE_MASK              0x1F
+ #define DESIGNWARE_PCIE_ATU_TYPE_MEM               (0x0 << 0)
++#define DESIGNWARE_PCIE_ATU_TYPE_IO                (0x2 << 0)
+ #define DESIGNWARE_PCIE_ATU_CR2                    0x908
+ #define DESIGNWARE_PCIE_ATU_ENABLE                 BIT(31)
+ #define DESIGNWARE_PCIE_ATU_LOWER_BASE             0x90C
+@@ -277,9 +279,26 @@ static void designware_pcie_update_viewport(DesignwarePCIERoot *root,
+     const uint64_t size   = (uint64_t)viewport->limit - base + 1;
+     const bool enabled    = viewport->cr[1] & DESIGNWARE_PCIE_ATU_ENABLE;
+ 
++    /*
++     * Only the TYPE field of region control 1 selects the transaction type.
++     * Guests may set other bits in the same register (Linux 7.0 sets bit 8,
++     * TD, on every outbound region), so compare the field alone.
++     */
++    const uint32_t type   = viewport->cr[0] & DESIGNWARE_PCIE_ATU_TYPE_MASK;
++
+     MemoryRegion *current, *other;
+ 
+-    if (viewport->cr[0] == DESIGNWARE_PCIE_ATU_TYPE_MEM) {
++    if (type == DESIGNWARE_PCIE_ATU_TYPE_IO) {
++        /*
++         * I/O regions are not modelled. Leave both windows disabled rather
++         * than turning I/O port accesses into configuration accesses.
++         */
++        memory_region_set_enabled(&viewport->mem, false);
++        memory_region_set_enabled(&viewport->cfg, false);
++        return;
++    }
++
++    if (type == DESIGNWARE_PCIE_ATU_TYPE_MEM) {
+         current = &viewport->mem;
+         other   = &viewport->cfg;
+         memory_region_set_alias_offset(current, target);
+-- 
+2.43.0
+

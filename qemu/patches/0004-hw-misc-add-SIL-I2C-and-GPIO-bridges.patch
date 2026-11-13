@@ -1,0 +1,388 @@
+From 5b4dc4b22636e7a4796047849f9ad6ab6d1035e2 Mon Sep 17 00:00:00 2001
+From: SquadronConsult <michael@defense-dna.com>
+Date: Tue, 10 Nov 2026 04:44:36 +0000
+Subject: [PATCH 4/5] hw/misc: add SIL I2C and GPIO bridges
+
+sil-i2c-bridge is an I2C target whose every bus event is answered by an
+external model over a chardev. sil-gpio-bridge wires SoC GPIO pins to an
+external model: guest-driven levels go out, external levels come in as pin
+inputs, and a machine reset releases every pin.
+---
+ hw/misc/Kconfig           |   5 +
+ hw/misc/meson.build       |   1 +
+ hw/misc/sil_gpio_bridge.c | 205 ++++++++++++++++++++++++++++++++++++++
+ hw/misc/sil_i2c_bridge.c  | 122 +++++++++++++++++++++++
+ 4 files changed, 333 insertions(+)
+ create mode 100644 hw/misc/sil_gpio_bridge.c
+ create mode 100644 hw/misc/sil_i2c_bridge.c
+
+diff --git a/hw/misc/Kconfig b/hw/misc/Kconfig
+index b2bc5a0..daa225d 100644
+--- a/hw/misc/Kconfig
++++ b/hw/misc/Kconfig
+@@ -99,6 +99,11 @@ config FSL_IMX8MP_CCM
+ config FSL_IMX8MP_PM
+     bool
+ 
++config SIL_BRIDGE
++    bool
++    default y if I2C_DEVICES
++    depends on I2C
++
+ config STM32_RCC
+     bool
+ 
+diff --git a/hw/misc/meson.build b/hw/misc/meson.build
+index f477f08..8991cfa 100644
+--- a/hw/misc/meson.build
++++ b/hw/misc/meson.build
+@@ -58,6 +58,7 @@ system_ss.add(when: 'CONFIG_EXYNOS4', if_true: files('exynos4210_pmu.c', 'exynos
+ system_ss.add(when: 'CONFIG_FSL_IMX8MP_ANALOG', if_true: files('imx8mp_analog.c'))
+ system_ss.add(when: 'CONFIG_FSL_IMX8MP_CCM', if_true: files('imx8mp_ccm.c'))
+ system_ss.add(when: 'CONFIG_FSL_IMX8MP_PM', if_true: files('imx8mp_gpc.c', 'imx8mp_src.c'))
++system_ss.add(when: 'CONFIG_SIL_BRIDGE', if_true: files('sil_i2c_bridge.c', 'sil_gpio_bridge.c'))
+ system_ss.add(when: 'CONFIG_IMX', if_true: files(
+   'imx25_ccm.c',
+   'imx31_ccm.c',
+diff --git a/hw/misc/sil_gpio_bridge.c b/hw/misc/sil_gpio_bridge.c
+new file mode 100644
+index 0000000..15b7550
+--- /dev/null
++++ b/hw/misc/sil_gpio_bridge.c
+@@ -0,0 +1,205 @@
++/*
++ * SIL GPIO bridge: connects SoC GPIO pins to a model outside QEMU.
++ *
++ * "map" lists the pins as "<controller>:<pin>" separated by ";"; line N
++ * of the bridge is the Nth pin. The controllers are found under
++ * "controller-prefix" (default /machine/soc/gpio, so "1:5" is GPIO1_IO05).
++ * Each line works both ways, like a wire on a board:
++ *
++ *   QEMU -> peer  'O' line level   the guest drives the pin (output);
++ *                                  level 0xff: released (input or reset)
++ *   peer -> QEMU  'I' line level   the outside world drives the pin (input)
++ *
++ * Messages are 3 bytes. When a peer connects it gets the current level of
++ * every output line, so it starts in step with the guest.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/module.h"
++#include "qemu/cutils.h"
++#include "qapi/error.h"
++#include "hw/irq.h"
++#include "system/reset.h"
++#include "hw/qdev-core.h"
++#include "hw/qdev-properties.h"
++#include "hw/qdev-properties-system.h"
++#include "chardev/char-fe.h"
++#include "qom/object.h"
++
++#define TYPE_SIL_GPIO_BRIDGE "sil-gpio-bridge"
++OBJECT_DECLARE_SIMPLE_TYPE(SILGPIOBridgeState, SIL_GPIO_BRIDGE)
++
++#define SIL_GPIO_MAX_LINES 64
++
++struct SILGPIOBridgeState {
++    DeviceState parent_obj;
++
++    CharFrontend chr;
++    char *map;
++    char *prefix;
++
++    unsigned num_lines;
++    qemu_irq drive[SIL_GPIO_MAX_LINES];  /* to the SoC pin's input */
++    int8_t out_level[SIL_GPIO_MAX_LINES]; /* last level the guest drove */
++    uint8_t rx[3];
++    unsigned rx_len;
++};
++
++static void sil_gpio_bridge_send(SILGPIOBridgeState *s, int line)
++{
++    uint8_t msg[3] = { 'O', line, (uint8_t)s->out_level[line] };
++
++    if (qemu_chr_fe_backend_connected(&s->chr)) {
++        qemu_chr_fe_write_all(&s->chr, msg, sizeof(msg));
++    }
++}
++
++/* The guest changed a pin it drives. */
++static void sil_gpio_bridge_out(void *opaque, int line, int level)
++{
++    SILGPIOBridgeState *s = opaque;
++
++    level = !!level;
++    if (s->out_level[line] == level) {
++        return;
++    }
++    s->out_level[line] = level;
++    sil_gpio_bridge_send(s, line);
++}
++
++static int sil_gpio_bridge_can_receive(void *opaque)
++{
++    SILGPIOBridgeState *s = opaque;
++
++    return sizeof(s->rx) - s->rx_len;
++}
++
++static void sil_gpio_bridge_receive(void *opaque, const uint8_t *buf, int size)
++{
++    SILGPIOBridgeState *s = opaque;
++
++    for (int i = 0; i < size; i++) {
++        s->rx[s->rx_len++] = buf[i];
++        if (s->rx_len < sizeof(s->rx)) {
++            continue;
++        }
++        s->rx_len = 0;
++        if (s->rx[0] == 'I' && s->rx[1] < s->num_lines) {
++            qemu_set_irq(s->drive[s->rx[1]], !!s->rx[2]);
++        }
++    }
++}
++
++static void sil_gpio_bridge_chr_event(void *opaque, QEMUChrEvent event)
++{
++    SILGPIOBridgeState *s = opaque;
++
++    if (event != CHR_EVENT_OPENED) {
++        return;
++    }
++    s->rx_len = 0;
++    for (unsigned i = 0; i < s->num_lines; i++) {
++        if (s->out_level[i] >= 0) {
++            sil_gpio_bridge_send(s, i);
++        }
++    }
++}
++
++/* A machine reset releases every pin the guest drove, as on a board. */
++static void sil_gpio_bridge_reset(void *opaque)
++{
++    SILGPIOBridgeState *s = opaque;
++
++    for (unsigned i = 0; i < s->num_lines; i++) {
++        if (s->out_level[i] >= 0) {
++            s->out_level[i] = -1;
++            sil_gpio_bridge_send(s, i);
++        }
++    }
++}
++
++static void sil_gpio_bridge_realize(DeviceState *dev, Error **errp)
++{
++    SILGPIOBridgeState *s = SIL_GPIO_BRIDGE(dev);
++    g_auto(GStrv) pins = NULL;
++
++    if (!s->map || !*s->map) {
++        error_setg(errp, "sil-gpio-bridge needs a map");
++        return;
++    }
++    pins = g_strsplit_set(s->map, ";,", -1);
++    s->num_lines = g_strv_length(pins);
++    if (s->num_lines > SIL_GPIO_MAX_LINES) {
++        error_setg(errp, "sil-gpio-bridge: at most %d lines",
++                   SIL_GPIO_MAX_LINES);
++        return;
++    }
++    qdev_init_gpio_in(dev, sil_gpio_bridge_out, s->num_lines);
++
++    for (unsigned i = 0; i < s->num_lines; i++) {
++        unsigned long ctrl, pin;
++        const char *end;
++        g_autofree char *path = NULL;
++        Object *obj;
++
++        if (qemu_strtoul(pins[i], &end, 10, &ctrl) || *end != ':' ||
++            qemu_strtoul(end + 1, NULL, 10, &pin) || pin > 31) {
++            error_setg(errp, "sil-gpio-bridge: bad pin '%s'", pins[i]);
++            return;
++        }
++        path = g_strdup_printf("%s%lu", s->prefix, ctrl);
++        obj = object_resolve_path(path, NULL);
++        if (!obj || !object_dynamic_cast(obj, TYPE_DEVICE)) {
++            error_setg(errp, "sil-gpio-bridge: no GPIO controller %s", path);
++            return;
++        }
++        s->out_level[i] = -1;
++        s->drive[i] = qdev_get_gpio_in(DEVICE(obj), pin);
++        qdev_connect_gpio_out(DEVICE(obj), pin, qdev_get_gpio_in(dev, i));
++    }
++
++    qemu_register_reset(sil_gpio_bridge_reset, s);
++    qemu_chr_fe_set_handlers(&s->chr, sil_gpio_bridge_can_receive,
++                             sil_gpio_bridge_receive, sil_gpio_bridge_chr_event,
++                             NULL, s, NULL, true);
++}
++
++static const Property sil_gpio_bridge_properties[] = {
++    DEFINE_PROP_CHR("chardev", SILGPIOBridgeState, chr),
++    DEFINE_PROP_STRING("map", SILGPIOBridgeState, map),
++    DEFINE_PROP_STRING("controller-prefix", SILGPIOBridgeState, prefix),
++};
++
++static void sil_gpio_bridge_init(Object *obj)
++{
++    SILGPIOBridgeState *s = SIL_GPIO_BRIDGE(obj);
++
++    s->prefix = g_strdup("/machine/soc/gpio");
++}
++
++static void sil_gpio_bridge_class_init(ObjectClass *klass, const void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++
++    dc->realize = sil_gpio_bridge_realize;
++    dc->desc = "SoC GPIO pins wired to an external model over a chardev";
++    dc->user_creatable = true;
++    device_class_set_props(dc, sil_gpio_bridge_properties);
++}
++
++static const TypeInfo sil_gpio_bridge_info = {
++    .name          = TYPE_SIL_GPIO_BRIDGE,
++    .parent        = TYPE_DEVICE,
++    .instance_size = sizeof(SILGPIOBridgeState),
++    .instance_init = sil_gpio_bridge_init,
++    .class_init    = sil_gpio_bridge_class_init,
++};
++
++static void sil_gpio_bridge_register_types(void)
++{
++    type_register_static(&sil_gpio_bridge_info);
++}
++
++type_init(sil_gpio_bridge_register_types)
+diff --git a/hw/misc/sil_i2c_bridge.c b/hw/misc/sil_i2c_bridge.c
+new file mode 100644
+index 0000000..9ee8906
+--- /dev/null
++++ b/hw/misc/sil_i2c_bridge.c
+@@ -0,0 +1,122 @@
++/*
++ * SIL I2C bridge: an I2C target whose behaviour lives outside QEMU.
++ *
++ * Every bus event for this device's address is sent to a chardev (usually a
++ * UNIX socket to the simulation harness) and QEMU waits for the reply, so
++ * the external model answers each byte exactly as a real target would:
++ *
++ *   request (2 bytes)        reply (1 byte)
++ *   'S' addr  start write    0 = ACK, 1 = NACK
++ *   'R' addr  start read     0 = ACK, 1 = NACK
++ *   'W' byte  byte written   0 = ACK, 1 = NACK
++ *   'B' 0     byte read      the byte
++ *   'N' 0     master NACKed  0
++ *   'P' 0     stop           0
++ *
++ * Without a connected peer the device does not acknowledge its address.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/module.h"
++#include "qemu/log.h"
++#include "qapi/error.h"
++#include "hw/i2c/i2c.h"
++#include "hw/qdev-properties.h"
++#include "hw/qdev-properties-system.h"
++#include "chardev/char-fe.h"
++#include "qom/object.h"
++
++#define TYPE_SIL_I2C_BRIDGE "sil-i2c-bridge"
++OBJECT_DECLARE_SIMPLE_TYPE(SILI2CBridgeState, SIL_I2C_BRIDGE)
++
++struct SILI2CBridgeState {
++    I2CSlave parent_obj;
++
++    CharFrontend chr;
++};
++
++static int sil_i2c_bridge_xfer(SILI2CBridgeState *s, uint8_t op, uint8_t arg,
++                               uint8_t fail)
++{
++    uint8_t req[2] = { op, arg };
++    uint8_t reply;
++
++    if (!qemu_chr_fe_backend_connected(&s->chr) ||
++        qemu_chr_fe_write_all(&s->chr, req, sizeof(req)) != sizeof(req) ||
++        qemu_chr_fe_read_all(&s->chr, &reply, 1) != 1) {
++        return fail;
++    }
++    return reply;
++}
++
++static int sil_i2c_bridge_event(I2CSlave *i2c, enum i2c_event event)
++{
++    SILI2CBridgeState *s = SIL_I2C_BRIDGE(i2c);
++
++    switch (event) {
++    case I2C_START_SEND:
++        return sil_i2c_bridge_xfer(s, 'S', i2c->address, 1) ? -1 : 0;
++    case I2C_START_RECV:
++        return sil_i2c_bridge_xfer(s, 'R', i2c->address, 1) ? -1 : 0;
++    case I2C_NACK:
++        sil_i2c_bridge_xfer(s, 'N', 0, 0);
++        return 0;
++    case I2C_FINISH:
++        sil_i2c_bridge_xfer(s, 'P', 0, 0);
++        return 0;
++    default:
++        return -1;
++    }
++}
++
++static int sil_i2c_bridge_send(I2CSlave *i2c, uint8_t data)
++{
++    return sil_i2c_bridge_xfer(SIL_I2C_BRIDGE(i2c), 'W', data, 1) ? 1 : 0;
++}
++
++static uint8_t sil_i2c_bridge_recv(I2CSlave *i2c)
++{
++    return sil_i2c_bridge_xfer(SIL_I2C_BRIDGE(i2c), 'B', 0, 0xff);
++}
++
++static void sil_i2c_bridge_realize(DeviceState *dev, Error **errp)
++{
++    SILI2CBridgeState *s = SIL_I2C_BRIDGE(dev);
++
++    if (!qemu_chr_fe_backend_connected(&s->chr)) {
++        error_setg(errp, "sil-i2c-bridge needs a chardev");
++    }
++}
++
++static const Property sil_i2c_bridge_properties[] = {
++    DEFINE_PROP_CHR("chardev", SILI2CBridgeState, chr),
++};
++
++static void sil_i2c_bridge_class_init(ObjectClass *klass, const void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
++
++    dc->realize = sil_i2c_bridge_realize;
++    dc->desc = "I2C target answered by an external model over a chardev";
++    device_class_set_props(dc, sil_i2c_bridge_properties);
++    k->event = sil_i2c_bridge_event;
++    k->send = sil_i2c_bridge_send;
++    k->recv = sil_i2c_bridge_recv;
++}
++
++static const TypeInfo sil_i2c_bridge_info = {
++    .name          = TYPE_SIL_I2C_BRIDGE,
++    .parent        = TYPE_I2C_SLAVE,
++    .instance_size = sizeof(SILI2CBridgeState),
++    .class_init    = sil_i2c_bridge_class_init,
++};
++
++static void sil_i2c_bridge_register_types(void)
++{
++    type_register_static(&sil_i2c_bridge_info);
++}
++
++type_init(sil_i2c_bridge_register_types)
+-- 
+2.43.0
+

@@ -1,0 +1,172 @@
+#!/bin/sh
+# Shield default configuration applied to upstream OpenWRT.
+# Shield defaults: LAN gateway 192.168.100.1, one wired WAN, one cellular WAN.
+
+# The SIL management NIC (host simulator services) is the one with this MAC.
+# Images whose cellular data runs through the emulated modem have no stand-in
+# cellular NIC, so its name depends on how many NICs come before it.
+MGMT_MAC=52:54:00:5e:00:1f
+mgmt=eth3
+for d in /sys/class/net/*; do
+	[ "$(cat "$d/address" 2>/dev/null)" = "$MGMT_MAC" ] && mgmt=${d##*/}
+done
+
+# Cellular uplink 'wanb'. As on Shield, ModemManager drives the EM7595 and
+# brings up its QMI data interface wwan0. The SIL attaches the modem over
+# USB/IP (board.conf: modem_usb_dev).
+. /usr/share/shield-sil/board.conf
+modem_dev=$(modem_usb_dev)
+# Without ModemManager (images without Shield's driver interfaces), the SIL's
+# stand-in NIC eth2 carries cellular data and takes a DHCP lease.
+if [ -x /usr/sbin/ModemManager ] && [ -x /usr/sbin/shield-usbip ]; then
+	wanb="set network.wanb.proto='modemmanager'
+set network.wanb.device='$modem_dev'
+set network.wanb.apn='internet'
+set network.wanb.iptype='ipv4'
+set network.wanb.loglevel='ERR'"
+else
+	wanb="set network.wanb.device='eth2'
+set network.wanb.proto='dhcp'"
+fi
+
+uci -q batch <<EOF
+set system.@system[0].hostname='Shield'
+set system.@system[0].zonename='UTC'
+
+delete network.lan
+set network.lan=interface
+set network.lan.device='br-lan'
+set network.lan.proto='static'
+set network.lan.ipaddr='192.168.100.1'
+set network.lan.netmask='255.255.255.0'
+set network.lan.ip6assign='60'
+
+delete network.@device[0]
+add network device
+set network.@device[-1].name='br-lan'
+set network.@device[-1].type='bridge'
+add_list network.@device[-1].ports='eth0'
+# USB-C usb0 (USB network gadget on Shield) is part of the LAN bridge.
+add_list network.@device[-1].ports='usb0'
+
+delete network.wan
+set network.wan=interface
+set network.wan.device='eth1'
+set network.wan.proto='dhcp'
+set network.wan.metric='10'
+
+delete network.wan6
+
+# Cellular uplink, named 'wanb' as on Shield (see above).
+delete network.wwan
+set network.wanb=interface
+$wanb
+set network.wanb.metric='20'
+
+# SIL management link: host simulator services such as the USB/IP
+# server. Not part of any Shield role: no firewall zone, no mwan3, no gateway.
+set network.silmgmt=interface
+set network.silmgmt.device='$mgmt'
+set network.silmgmt.proto='static'
+set network.silmgmt.ipaddr='10.0.2.15'
+set network.silmgmt.netmask='255.255.255.0'
+set network.silmgmt.defaultroute='0'
+set network.silmgmt.delegate='0'
+
+set dhcp.lan.start='100'
+set dhcp.lan.limit='150'
+EOF
+
+# Put the cellular interface in the firewall WAN zone.
+zone=$(uci show firewall | sed -n "s/^firewall\.\(@zone\[[0-9]*\]\)\.name='wan'$/\1/p" | head -n1)
+if [ -n "$zone" ]; then
+	uci -q del_list "firewall.$zone.network=wwan"
+	uci -q del_list "firewall.$zone.network=wanb"
+	uci add_list "firewall.$zone.network=wanb"
+fi
+
+# WAN failover with Shield's roles: policy wan_wanb prefers wan, falls back to
+# wanb, and tracks the same public resolvers (answered by the SIL's simulated
+# internet). Timings are mwan3's upstream defaults.
+if [ -f /etc/config/mwan3 ]; then
+	cat > /etc/config/mwan3 <<'MWAN3'
+config globals 'globals'
+	option mmx_mask '0x3F00'
+
+config interface 'wan'
+	option enabled '1'
+	option family 'ipv4'
+	option reliability '1'
+	list track_ip '1.1.1.1'
+	list track_ip '1.0.0.1'
+	list track_ip '9.9.9.9'
+	list track_ip '149.112.112.112'
+
+config interface 'wanb'
+	option enabled '1'
+	option family 'ipv4'
+	option reliability '1'
+	list track_ip '1.1.1.1'
+	list track_ip '1.0.0.1'
+	list track_ip '9.9.9.9'
+	list track_ip '149.112.112.112'
+
+config member 'wan_m1_w3'
+	option interface 'wan'
+	option metric '1'
+	option weight '3'
+
+config member 'wanb_m2_w3'
+	option interface 'wanb'
+	option metric '2'
+	option weight '3'
+
+config policy 'wan_wanb'
+	list use_member 'wan_m1_w3'
+	list use_member 'wanb_m2_w3'
+
+config rule 'default_rule_v4'
+	option dest_ip '0.0.0.0/0'
+	option use_policy 'wan_wanb'
+	option family 'ipv4'
+MWAN3
+fi
+
+# Wi-Fi: Shield's AP on the first simulated radio, bridged into the LAN. The
+# second simulated radio is the SIL's Wi-Fi client (shield-wifi-client), moved
+# to its own network namespace. Its section is there only so OpenWrt leaves it
+# alone: disabled, and present so that 25.12's Wi-Fi detection doesn't add it
+# as a new radio (country '00'), after which hostapd got country_code=00 for
+# radio0 and refused to start the AP.
+if [ -d /sys/devices/virtual/mac80211_hwsim/hwsim0 ]; then
+	. /usr/share/shield-sil/wifi.conf
+	cat > /etc/config/wireless <<WIFI
+config wifi-device 'radio0'
+	option type 'mac80211'
+	option path 'virtual/mac80211_hwsim/hwsim0'
+	option band '$WIFI_BAND'
+	option channel '$WIFI_CHANNEL'
+	option htmode '$WIFI_HTMODE'
+	option country '$WIFI_COUNTRY'
+	option cell_density '0'
+
+config wifi-iface 'ap0'
+	option device 'radio0'
+	option network 'lan'
+	option mode 'ap'
+	option ifname '$WIFI_AP_IFNAME'
+	option ssid '$WIFI_SSID'
+	option encryption 'psk2'
+	option key '$WIFI_KEY'
+
+config wifi-device 'radio1'
+	option type 'mac80211'
+	option path 'virtual/mac80211_hwsim/hwsim1'
+	option band '$WIFI_BAND'
+	option country '$WIFI_COUNTRY'
+	option disabled '1'
+WIFI
+fi
+
+uci commit
+exit 0

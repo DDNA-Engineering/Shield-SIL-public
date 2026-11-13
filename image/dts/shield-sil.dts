@@ -1,0 +1,300 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Shield (v1.5) as emulated by the SIL on QEMU's i.MX 8M Plus.
+ *
+ * Interfaces and names follow Shield: eMMC on uSDHC3 (mmcblk2), console on
+ * UART2, the TPS25751 USB-C PD controller at 0x20 on I2C2 (/dev/i2c-1, the
+ * BQ25792 charger sits behind it), front-panel LEDs (gpio-leds), the button
+ * (gpio-keys, BTN_0) and the named GPIOs (gpio-line-names).
+ *
+ * The LED, button and named GPIO pins are Shield's (from its device tree);
+ * the SIL wires them to its models through QEMU's sil-gpio-bridge
+ * (src/shield_sil/imx8mp.py has the same table). Shield's second GbE (EQoS) is a PCIe NIC here, because QEMU
+ * does not model the EQoS.
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
+#include <dt-bindings/phy/phy-imx8-pcie.h>
+#include "imx8mp.dtsi"
+
+/ {
+	model = "Shield v1.5 (SIL)";
+	compatible = "ddna,shield-sil", "fsl,imx8mp";
+
+	chosen {
+		stdout-path = &uart2;
+	};
+
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0x0 0x40000000 0 0xc0000000>,
+		      <0x1 0x00000000 0 0x40000000>;
+	};
+
+	/* Front-panel LEDs on Shield's pins. Shield drives them with pwm-gpio and
+	 * pwm-leds (max_brightness 255); the upstream OpenWrt kernels have no
+	 * pwm-gpio, and a software PWM would toggle each pin through the GPIO
+	 * bridge thousands of times a second, so the SIL uses gpio-leds on the
+	 * same pins (max_brightness 1). */
+	leds {
+		compatible = "gpio-leds";
+
+		led-0 {
+			label = "Heartbeat";
+			gpios = <&gpio1 12 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "heartbeat";
+		};
+		led-1 {
+			label = "System";
+			gpios = <&gpio5 3 GPIO_ACTIVE_LOW>;
+			default-state = "on";
+			linux,default-trigger = "default-on";
+		};
+		led-2 {
+			label = "User";
+			gpios = <&gpio4 30 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
+		led-3 {
+			label = "WAN";
+			gpios = <&gpio5 0 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
+		led-4 {
+			label = "WiFi";
+			gpios = <&gpio4 31 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
+		led-5 {
+			label = "ETH";
+			gpios = <&gpio1 1 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
+		led-6 {
+			label = "Battery";
+			gpios = <&gpio4 22 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
+	};
+
+	/* Front-panel button, as on Shield: GPIO5_IO04, active low. */
+	gpio-keys {
+		compatible = "gpio-keys";
+		/* Input device name; the SIL uses the same one on every machine. */
+		label = "Front-panel button";
+
+		button-0 {
+			label = "user_button";
+			linux,code = <BTN_0>;
+			gpios = <&gpio5 4 GPIO_ACTIVE_LOW>;
+			debounce-interval = <50>;
+		};
+	};
+
+	/* Named GPIOs as on Shield: OpenWrt's gpio-export driver presents them as
+	 * /sys/class/gpio/<name>, which Shield's scripts use. Kernels without it
+	 * (Ubuntu) ignore these nodes and find the lines by gpio-line-names.
+	 * Shield's current tree drives the Wi-Fi enable pin (GPIO5_IO12) with
+	 * rfkill-gpio; the SIL exports it as shield:wifi:enabled, the name Shield's
+	 * documentation uses. */
+	shield-gpio-export {
+		compatible = "gpio-export";
+
+		sim-select {
+			gpio-export,name = "shield:cell:sim-select";
+			gpio-export,output = <0>;
+			gpios = <&gpio3 27 GPIO_ACTIVE_HIGH>;
+		};
+		full-card-power {
+			gpio-export,name = "shield:cell:full-card-power";
+			gpio-export,output = <1>;
+			gpios = <&gpio4 12 GPIO_ACTIVE_HIGH>;
+		};
+		wifi-wake {
+			gpio-export,name = "shield:wifi:wake";
+			gpio-export,output = <1>;
+			gpios = <&gpio5 10 GPIO_ACTIVE_HIGH>;
+		};
+		wifi-enabled {
+			gpio-export,name = "shield:wifi:enabled";
+			gpio-export,output = <1>;
+			gpios = <&gpio5 12 GPIO_ACTIVE_HIGH>;
+		};
+		pgood-5v-out-efuse {
+			gpio-export,name = "shield:pgood:5v-out-efuse";
+			gpio-export,input = <0>;
+			gpios = <&gpio5 1 GPIO_ACTIVE_HIGH>;
+		};
+		pgood-dc-efuse {
+			gpio-export,name = "shield:pgood:dc-efuse";
+			gpio-export,input = <0>;
+			gpios = <&gpio3 26 GPIO_ACTIVE_HIGH>;
+		};
+		pgood-batt-efuse {
+			gpio-export,name = "shield:pgood:batt-efuse";
+			gpio-export,input = <0>;
+			gpios = <&gpio4 25 GPIO_ACTIVE_HIGH>;
+		};
+		pgood-3v3-out-efuse {
+			gpio-export,name = "shield:pgood:3v3-out-efuse";
+			gpio-export,input = <0>;
+			gpios = <&gpio5 11 GPIO_ACTIVE_HIGH>;
+		};
+	};
+
+	pcie0_refclk: clock-pcie {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <100000000>;
+	};
+};
+
+/* No CPU power-down idle state: QEMU does not power a core off in WFI, so a
+ * core that TF-A parks for cpu-pd-wait (PSCI CPU_SUSPEND) never comes back.
+ * Idle cores use plain WFI. (The 7.0 dtsi lists the state; 6.6 and 6.12 do not.) */
+&A53_0 {
+	/delete-property/ cpu-idle-states;
+};
+
+&A53_1 {
+	/delete-property/ cpu-idle-states;
+};
+
+&A53_2 {
+	/delete-property/ cpu-idle-states;
+};
+
+&A53_3 {
+	/delete-property/ cpu-idle-states;
+};
+
+/* Named GPIO lines (libgpiod), on Shield's pins. */
+&gpio3 {
+	gpio-line-names =
+		"", "", "", "",
+		"", "", "", "",
+		"", "", "", "",
+		"", "", "", "",
+		"", "", "", "",
+		"", "", "", "",
+		"", "", "shield:pgood:dc-efuse", "shield:cell:sim-select",
+		"", "", "", "";
+};
+
+&gpio4 {
+	gpio-line-names =
+		"", "", "", "",
+		"", "", "", "",
+		"", "", "", "",
+		"shield:cell:full-card-power", "", "", "",
+		"", "", "", "",
+		"", "", "", "",
+		"", "shield:pgood:batt-efuse", "", "",
+		"", "", "", "";
+};
+
+&gpio5 {
+	gpio-line-names =
+		"", "shield:pgood:5v-out-efuse", "", "",
+		"", "", "", "",
+		"", "", "shield:wifi:wake", "shield:pgood:3v3-out-efuse",
+		"shield:wifi:enabled", "", "", "",
+		"", "", "", "",
+		"", "", "", "",
+		"", "", "", "",
+		"", "", "", "";
+};
+
+/* LAN: the FEC, PHY at address 1. */
+&fec {
+	phy-mode = "rgmii-id";
+	phy-handle = <&ethphy0>;
+	status = "okay";
+
+	mdio {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		ethphy0: ethernet-phy@1 {
+			compatible = "ethernet-phy-ieee802.3-c22";
+			reg = <1>;
+		};
+	};
+};
+
+/* WAN: Shield's EQoS port, a PCIe NIC on the SIL. */
+&pcie_phy {
+	fsl,refclk-pad-mode = <IMX8_PCIE_REFCLK_PAD_INPUT>;
+	clocks = <&pcie0_refclk>;
+	clock-names = "ref";
+	status = "okay";
+};
+
+&pcie {
+	status = "okay";
+};
+
+/* SoM bus, /dev/i2c-0 (no devices modelled). */
+&i2c1 {
+	clock-frequency = <100000>;
+	status = "okay";
+};
+
+/* USB-C PD controller (TPS25751), used from userspace through /dev/i2c-1.
+ * Shield also has its EEPROM (0x50), HD3SS3220 (0x67) and RTC (0x69) here;
+ * the SIL does not model them. */
+&i2c2 {
+	clock-frequency = <400000>;
+	status = "okay";
+};
+
+/* Console */
+&uart2 {
+	status = "okay";
+};
+
+/* SIL hardware bus (host <-> guest agent), not a Shield interface.
+ * No DMA: QEMU does not model the SDMA engine, so imx-uart would hand
+ * received bytes to a DMA channel that never runs and the bus would stall
+ * after the first frames. Interrupt-driven RX works on the emulated UART. */
+&uart1 {
+	/delete-property/ dmas;
+	/delete-property/ dma-names;
+	status = "okay";
+};
+
+&uart3 {
+	/delete-property/ dmas;
+	/delete-property/ dma-names;
+	status = "okay";
+};
+
+/* USB host. The EM7595 modem is a USB device on Shield; in the SIL it
+ * arrives over USB/IP on the management link instead. */
+&usb3_phy0 {
+	status = "okay";
+};
+
+&usb3_0 {
+	status = "okay";
+};
+
+&usb_dwc3_0 {
+	dr_mode = "host";
+	status = "okay";
+};
+
+/* 32 GB eMMC */
+&usdhc3 {
+	bus-width = <8>;
+	non-removable;
+	status = "okay";
+};
+
+&wdog1 {
+	status = "okay";
+};

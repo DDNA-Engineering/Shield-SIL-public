@@ -1,0 +1,43 @@
+description = "Upstream OpenWrt 25.12.3 (imx/cortexa53) on Shield's SoC (i.MX 8M Plus machine), Shield default configuration"
+
+[build]
+builder = "openwrt"
+tag = "imx-cortexa53-v25.12.3"
+profile = "imx8m"
+machine = "imx8mp"
+# The release kernel's version: the SIL device tree is built against its sources.
+kernel_version = "6.12.85"
+packages_file = "image/openwrt/shield-packages-imx8mp.list"
+# Shield's eMMC (GPT, rescue + A/B slots) booted by U-Boot: image/builders/emmc.py.
+storage = "emmc"
+
+[image]
+# Shield's SoC on the SIL's patched QEMU (qemu/, /opt/qemu-sil in the ./sil
+# container): TF-A and U-Boot boot slot A or B from the eMMC on uSDHC3, the
+# kernel uses Shield's own drivers for I2C, GPIOs, LEDs, button and watchdog
+# (docs/imx8mp.md).
+qemu = "/opt/qemu-sil/bin/qemu-system-aarch64"
+machine = "imx8mp-evk"
+storage = "emmc"
+tfa = "build/images/openwrt-25.12.3-imx8mp/bl31.bin"
+firmware = "build/images/openwrt-25.12.3-imx8mp/u-boot.bin"
+kernel = ""
+initrd = ""
+append = ""
+disk = "build/images/openwrt-25.12.3-imx8mp/emmc.img"
+disk_format = "raw"
+# WDOG1: procd feeds /dev/watchdog; a hung system resets the board.
+watchdog = true
+
+[guest]
+adapter = "openwrt"
+hw_agent = true
+board_interfaces = true
+
+[network]
+# Cellular data goes through the emulated EM7595 (USB/IP, QMI raw-IP) as on
+# Shield: ModemManager brings up wanb on wwan0. No stand-in NIC.
+cellular = "modem"
+wwan_ifname = "wwan0"
+# USB-C usb0 in br-lan as Shield's USB network gadget (docs/guest-interfaces.md).
+usbc = "gadget"

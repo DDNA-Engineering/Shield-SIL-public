@@ -1,0 +1,45 @@
+name: ci
+
+# Quick checks only. Image builds and the system tests (tests/system: boots the
+# emulated Shield, 1 to 1.5 hours per image under emulation) run on a developer
+# machine with ./sil, not on GitHub; see CONTRIBUTING.md.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e '.[test]' ruff==0.16.9
+      - name: Lint (Python)
+        run: ruff check src tests image
+      - name: Shell syntax
+        run: |
+          set -e
+          for f in sil image/build.sh image/builders/*.sh image/uboot/build.sh image/tfa/build.sh image/dts/build.sh qemu/build.sh; do bash -n "$f"; done
+          # Guest scripts run under busybox ash (OpenWrt) and dash/bash (Ubuntu).
+          grep -rlE '^#!/bin/sh' image/overlay | while read -r f; do sh -n "$f"; done
+      - name: Catalog loads
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from shield_sil.guest import Guest
+          from shield_sil.profile import Profile
+          for f in sorted(Path("config/images").glob("*.toml")):
+              p = Profile.load(None, {}, image=f.stem)
+              Guest.from_profile(p)
+              print("ok", f.stem)
+          PY
+      - name: Unit tests
+        run: python -m pytest tests/unit -q
+      - name: System tests collect
+        # Collection only (no VM): catches import errors and bad markers.
+        run: python -m pytest tests/system -q --collect-only --sil-image openwrt-24.10.3 >/dev/null

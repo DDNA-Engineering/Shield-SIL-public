@@ -1,0 +1,42 @@
+#!/bin/sh
+# shield-hwd: guest end of the SIL hardware bus (state direction).
+#
+# Reads "<device>\t<json>" records from the virtio-serial port
+# org.kform.shield.hw.state (UART1 on the i.MX 8M Plus machine) and publishes each device's latest reading
+# atomically at /var/run/shield/<device>.json.
+
+STATE_DIR=/var/run/shield
+PORT_NAME=org.kform.shield.hw.state
+
+. /usr/share/shield-sil/board.conf
+
+# The virtio-serial port by name, or on the i.MX 8M Plus machine the UART (in
+# raw mode: no echo, no line editing or CR/LF translation).
+find_port() {
+	for d in /sys/class/virtio-ports/*; do
+		[ "$(cat "$d/name" 2>/dev/null)" = "$1" ] && { echo "/dev/${d##*/}"; return 0; }
+	done
+	if soc_board && [ -c "$SOC_HW_STATE_TTY" ]; then
+		stty -F "$SOC_HW_STATE_TTY" raw -echo 2>/dev/null
+		echo "$SOC_HW_STATE_TTY"
+		return 0
+	fi
+	return 1
+}
+
+mkdir -p "$STATE_DIR"
+port=$(find_port "$PORT_NAME") || { logger -t shield-hwd "port $PORT_NAME not found"; exit 1; }
+# Images with python3 use the coalescing Python agent: no fork per record.
+if command -v python3 >/dev/null 2>&1 && [ -f /usr/lib/shield-sil/hwd.py ]; then
+	logger -t shield-hwd "reading hardware state from $port (python agent)"
+	exec python3 /usr/lib/shield-sil/hwd.py "$port"
+fi
+logger -t shield-hwd "reading hardware state from $port"
+
+tab=$(printf '\t')
+while IFS="$tab" read -r dev json; do
+	case "$dev" in
+		''|*[!a-z0-9_]*) continue ;;
+	esac
+	printf '%s\n' "$json" > "$STATE_DIR/.$dev.tmp" && mv "$STATE_DIR/.$dev.tmp" "$STATE_DIR/$dev.json"
+done < "$port"

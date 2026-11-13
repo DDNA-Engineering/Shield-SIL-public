@@ -1,0 +1,11 @@
+[Unit]
+Description=Shield SIL hardware bus agent
+After=systemd-modules-load.service
+
+[Service]
+ExecStart=/usr/sbin/shield-hwd
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

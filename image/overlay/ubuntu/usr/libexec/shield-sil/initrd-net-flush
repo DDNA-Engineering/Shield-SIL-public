@@ -1,0 +1,11 @@
+#!/bin/sh
+# Flush the addresses and routes the initrd's systemd-networkd left on the NICs,
+# and its catch-all DHCP network file. See shield-sil-initrd-net.service.
+for d in /sys/class/net/eth*; do
+	[ -e "$d" ] || continue
+	ip addr flush dev "${d##*/}"
+	ip route flush dev "${d##*/}"
+done
+f=/run/systemd/network/zzzz-dracut-default.network
+[ ! -e "$f" ] || rm "$f"
+exit 0

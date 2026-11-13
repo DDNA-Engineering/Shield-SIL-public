@@ -1,0 +1,13 @@
+# Keeps the SIL's USB devices (EM7595 modem, I2C adapters, front-panel button)
+# attached through vhci_hcd. Same agent as the OpenWrt images.
+[Unit]
+Description=Shield SIL USB devices over USB/IP
+After=systemd-modules-load.service shield-hwd.service
+
+[Service]
+ExecStart=/usr/sbin/shield-usbip
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

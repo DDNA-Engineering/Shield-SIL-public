@@ -1,0 +1,11 @@
+#!/bin/sh
+# Shield front-panel button (BTN_0). Called by OpenWrt's button-hotplug with
+# ACTION=pressed|released and, on release, SEEN = seconds held.
+#
+# SIL default handler: it only records the event, so tests and users can see
+# that the press reached the software. Install Shield's own handler over this
+# file to test it (short < 1 s, long 1-600 s on Shield).
+[ -n "$ACTION" ] || exit 0
+logger -t button "BTN_0 $ACTION${SEEN:+ SEEN=$SEEN}"
+mkdir -p /var/run/shield
+echo "$ACTION ${SEEN:-0} $(cut -d' ' -f1 /proc/uptime)" >> /var/run/shield/button.log

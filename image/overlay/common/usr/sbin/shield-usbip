@@ -1,0 +1,139 @@
+#!/bin/sh
+# shield-usbip: plug the SIL's simulated USB devices into the guest.
+#
+# The host exports Shield's USB devices (the EM7595 modem, the I2C adapters
+# that stand in for the SoM's I2C controllers) from a USB/IP server, and
+# publishes where to find them on the hardware bus as /var/run/shield/usbip.json:
+#
+#   {"host": "10.0.2.2", "port": 3240, "busids": ["1-2", "1-3", "1-1"]}
+#
+# This agent keeps every listed device attached through vhci_hcd, so the
+# guest sees them as ordinary USB devices with upstream drivers (qcserial,
+# qmi_wwan, cdc-wdm, i2c-tiny-usb). Devices are attached in list order, one at
+# a time, so their bus numbers are stable (the first I2C adapter is i2c-0,
+# the second i2c-1). A device the host unplugs (the modem rebooting or
+# re-enumerating) drops off and is attached again as soon as the host offers
+# it; a busid no longer listed is detached.
+#
+# The connection runs over the SIL management link, which is in no OpenWrt
+# network role, so it never shows up in WAN/LAN or failover traffic.
+
+STATE=${SHIELD_STATE_DIR:-/var/run/shield}/usbip.json
+INTERVAL=1
+# Re-check every device with `usbip port` at least this often, even when the
+# fast path sees no change, so a missed change can never strand a device.
+RESYNC=10
+
+log() { logger -t shield-usbip "$*" 2>/dev/null || echo "shield-usbip: $*" >&2; }
+
+# Prints "<host> <port> <busid>..." from the state file.
+read_state() {
+	[ -s "$STATE" ] || return 1
+	if command -v jsonfilter >/dev/null 2>&1; then
+		host=$(jsonfilter -i "$STATE" -e '@.host') || return 1
+		port=$(jsonfilter -i "$STATE" -e '@.port') || return 1
+		busids=$(jsonfilter -i "$STATE" -e '@.busids[*]' | tr '\n' ' ')
+		echo "$host $port $busids"
+	else
+		python3 - "$STATE" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+print(s["host"], int(s["port"]), *s.get("busids", []))
+PY
+	fi
+}
+
+valid_busid() { case "$1" in ''|*[!0-9.-]*) return 1 ;; esac; }
+valid_host() { case "$1" in ''|*[!0-9a-zA-Z.:-]*) return 1 ;; esac; }
+
+# "<vhci port> <busid>" for every device currently attached from host:port.
+attached() {
+	usbip port 2>/dev/null | awk -v url="usbip://$1:$2/" '
+		/^Port [0-9]+:/ { p = $2; sub(":", "", p); next }
+		index($0, url) { b = substr($0, index($0, url) + length(url)); sub(/[ \t].*/, "", b); print p + 0, b }'
+}
+
+is_attached() { printf '%s\n' "$1" | awk -v b="$2" '$2 == b { f = 1 } END { exit !f }'; }
+
+# Number of vhci ports in use (status 006), with shell builtins only: the
+# steady-state loop must not fork, so the guest keeps up with the hardware bus.
+VHCI_STATUS=${SHIELD_VHCI_STATUS:-/sys/devices/platform/vhci_hcd.0/status}
+used_ports() {
+	n=0
+	[ -r "$VHCI_STATUS" ] || { USED=0; return; }
+	while read -r _hub _port sta _rest; do
+		[ "$sta" = 006 ] && n=$((n + 1))
+	done < "$VHCI_STATUS"
+	USED=$n
+}
+
+modprobe vhci-hcd 2>/dev/null
+
+last_err=""
+done_state="" done_count=-1 idle=0 synced=""
+while :; do
+	# Fast path: the host's offer is unchanged and every device it lists is
+	# still attached.
+	rec=""
+	[ -s "$STATE" ] && read -r rec < "$STATE"
+	if [ -n "$rec" ] && [ "$rec" = "$done_state" ] && [ "$idle" -lt "$RESYNC" ]; then
+		used_ports
+		if [ "$USED" = "$done_count" ]; then
+			idle=$((idle + 1))
+			sleep "$INTERVAL"
+			continue
+		fi
+	fi
+	# A periodic re-check that finds work means a change was missed: say so.
+	how=""
+	[ "$idle" -ge "$RESYNC" ] && [ "$rec" = "$done_state" ] && how=" (found by the periodic re-check)"
+	idle=0
+	done_state="" done_count=-1
+
+	if set -- $(read_state 2>/dev/null) && [ $# -ge 2 ] && valid_host "$1" && valid_busid "${2%%.*}"; then
+		host=$1 port=$2
+		shift 2
+		now=$(attached "$host" "$port")
+
+		# Detach what the host no longer offers.
+		printf '%s\n' "$now" | while read -r vport busid; do
+			[ -n "$busid" ] || continue
+			case " $* " in *" $busid "*) continue ;; esac
+			log "detaching $busid (port $vport): no longer exported"
+			usbip detach -p "$vport" >/dev/null 2>&1
+		done
+
+		# Attach in order; stop at the first one that is not available yet so
+		# later devices never take an earlier device's bus number.
+		complete=1
+		for busid in "$@"; do
+			valid_busid "$busid" || continue
+			is_attached "$now" "$busid" && continue
+			if out=$(usbip --tcp-port "$port" attach -r "$host" -b "$busid" 2>&1); then
+				log "attached $busid from $host:$port$how"
+				last_err=""
+				sleep 1    # let the driver bind before the next device enumerates
+			else
+				[ "$out" = "$last_err" ] || log "waiting for $busid: $out"
+				last_err=$out
+				complete=0
+				break
+			fi
+		done
+		# Everything listed is attached and nothing else is: remember it for
+		# the fast path.
+		if [ "$complete" = 1 ]; then
+			n_listed=$#
+			set -- $(attached "$host" "$port")
+			used_ports
+			if [ $(( $# / 2 )) -eq "$n_listed" ] && [ "$USED" -eq "$n_listed" ]; then
+				done_state=$rec done_count=$USED
+				[ "$rec" = "$synced" ] || log "all $n_listed devices attached"
+				synced=$rec
+			fi
+		else
+			synced=""
+		fi
+	fi
+	sleep "$INTERVAL"
+done

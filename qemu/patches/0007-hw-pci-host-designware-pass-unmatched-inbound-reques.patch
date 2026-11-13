@@ -1,0 +1,52 @@
+From 9647ea88d44fcb3b9eda005887058127ce123d70 Mon Sep 17 00:00:00 2001
+From: SquadronConsult <michael@defense-dna.com>
+Date: Tue, 10 Nov 2026 05:16:59 +0000
+Subject: [PATCH 7/7] hw/pci-host/designware: pass unmatched inbound requests
+ through
+
+In Root Complex mode an inbound request that hits no enabled inbound iATU
+region reaches the AXI bus untranslated. Linux programs inbound regions only
+when the DT has dma-ranges (imx8mp has none), so bus-master DMA was lost and
+PCIe NICs timed out on transmit.
+---
+ hw/pci-host/designware.c         | 11 +++++++++++
+ include/hw/pci-host/designware.h |  1 +
+ 2 files changed, 12 insertions(+)
+
+diff --git a/hw/pci-host/designware.c b/hw/pci-host/designware.c
+index f6e49ce..76fda63 100644
+--- a/hw/pci-host/designware.c
++++ b/hw/pci-host/designware.c
+@@ -706,6 +706,17 @@ static void designware_pcie_host_realize(DeviceState *dev, Error **errp)
+                        UINT64_MAX);
+     memory_region_add_subregion(&s->pci.address_space_root,
+                                 0x0, &s->pci.memory);
++    /*
++     * In Root Complex mode an inbound request that hits no enabled inbound
++     * iATU region is passed to the AXI bus untranslated. Linux only programs
++     * inbound regions when the DT has dma-ranges, so without this bypass bus
++     * master DMA (e.g. a NIC's descriptor rings) would go nowhere.
++     */
++    memory_region_init_alias(&s->pci.inbound_bypass, OBJECT(s),
++                             "pcie-inbound-bypass", get_system_memory(),
++                             0, UINT64_MAX);
++    memory_region_add_subregion_overlap(&s->pci.address_space_root, 0x0,
++                                        &s->pci.inbound_bypass, -2);
+     address_space_init(&s->pci.address_space,
+                        &s->pci.address_space_root,
+                        "pcie-bus-address-space");
+diff --git a/include/hw/pci-host/designware.h b/include/hw/pci-host/designware.h
+index a35a3bd..da91680 100644
+--- a/include/hw/pci-host/designware.h
++++ b/include/hw/pci-host/designware.h
+@@ -88,6 +88,7 @@ struct DesignwarePCIEHost {
+     struct {
+         AddressSpace address_space;
+         MemoryRegion address_space_root;
++        MemoryRegion inbound_bypass;
+ 
+         MemoryRegion memory;
+         MemoryRegion io;
+-- 
+2.43.0
+

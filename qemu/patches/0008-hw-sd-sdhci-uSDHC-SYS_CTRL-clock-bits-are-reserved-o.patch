@@ -1,0 +1,56 @@
+From 9680738b86e5fd737a36f54d83d336a05b71b7bd Mon Sep 17 00:00:00 2001
+From: SquadronConsult <michael@defense-dna.com>
+Date: Tue, 10 Nov 2026 05:27:09 +0000
+Subject: [PATCH] hw/sd/sdhci: uSDHC SYS_CTRL clock bits are reserved ones
+
+On uSDHC, SYS_CTRL bits 3..0 are reserved and read as 1 (reset value
+0x0080800F); the card clock is gated through VEND_SPEC. U-Boot's
+fsl_esdhc_imx writes them as 0, which QEMU took as the SDHCI clocks being
+off, so it dropped every command and U-Boot never found the eMMC.
+---
+ hw/sd/sdhci.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/hw/sd/sdhci.c b/hw/sd/sdhci.c
+index 62c1e6d..b1894af 100644
+--- a/hw/sd/sdhci.c
++++ b/hw/sd/sdhci.c
+@@ -1656,6 +1656,7 @@ static void sdhci_bus_class_init(ObjectClass *klass, const void *data)
+ 
+ #define USDHC_MIX_CTRL                  0x48
+ #define USDHC_MIX_CTRL_AC23EN           (1 << 7)
++#define USDHC_SYS_CTRL_RSVD_ONES        0xf
+ 
+ #define USDHC_VENDOR_SPEC               0xc0
+ #define USDHC_IMX_FRC_SDCLK_ON          (1 << 8)
+@@ -1714,6 +1715,11 @@ static uint64_t usdhc_read(void *opaque, hwaddr offset, unsigned size)
+         }
+         break;
+ 
++    case SDHC_CLKCON:
++        /* SYS_CTRL bits 3..0 are reserved on uSDHC and read as 1 */
++        ret = sdhci_read(opaque, offset, size) | USDHC_SYS_CTRL_RSVD_ONES;
++        break;
++
+     case USDHC_VENDOR_SPEC:
+         ret = s->vendor_spec;
+         break;
+@@ -1840,6 +1846,15 @@ usdhc_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
+         sdhci_write(opaque, offset, value, size);
+         break;
+ 
++    case SDHC_CLKCON:
++        /*
++         * uSDHC has no SDHCI clock enable bits: SYS_CTRL bits 3..0 are
++         * reserved (reset value 0x0080800F) and the card clock is gated by
++         * VEND_SPEC instead. U-Boot writes them as 0, so keep the SDHCI
++         * core's internal and card clocks on regardless.
++         */
++        sdhci_write(opaque, offset, val | USDHC_SYS_CTRL_RSVD_ONES, size);
++        break;
+     case USDHC_MIX_CTRL:
+         /*
+          * So, when SD/MMC stack in Linux tries to write to "Transfer
+-- 
+2.43.0
+

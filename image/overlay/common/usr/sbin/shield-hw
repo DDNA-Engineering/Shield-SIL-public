@@ -1,0 +1,74 @@
+#!/bin/sh
+# shield-hw: read and drive the Shield peripherals from the guest.
+#
+#   shield-hw get <device>             print the latest reading (JSON)
+#   shield-hw set <device> '<json>'    send a command to the hardware
+#
+# Devices: bms pd thermal modem leds (get); led modem gpio (set)
+# Examples:
+#   shield-hw set led '{"name":"Battery","state":"blink_slow"}'
+#   shield-hw set modem '{"action":"reset"}'
+
+STATE_DIR=/var/run/shield
+PORT_NAME=org.kform.shield.hw.cmd
+LOCK=/var/lock/shield-hw.lock
+
+. /usr/share/shield-sil/board.conf
+
+# The virtio-serial port by name, or on the i.MX 8M Plus machine the UART (in
+# raw mode: no echo, no line editing or CR/LF translation).
+find_port() {
+	for d in /sys/class/virtio-ports/*; do
+		[ "$(cat "$d/name" 2>/dev/null)" = "$1" ] && { echo "/dev/${d##*/}"; return 0; }
+	done
+	if soc_board && [ -c "$SOC_HW_CMD_TTY" ]; then
+		stty -F "$SOC_HW_CMD_TTY" raw -echo 2>/dev/null
+		echo "$SOC_HW_CMD_TTY"
+		return 0
+	fi
+	return 1
+}
+
+# JSON check with whatever the image has: jsonfilter (OpenWrt), jq or python3.
+valid_json() {
+	if command -v jsonfilter >/dev/null 2>&1; then
+		printf '%s' "$1" | jsonfilter -e '@' >/dev/null 2>&1
+	elif command -v jq >/dev/null 2>&1; then
+		printf '%s' "$1" | jq -e . >/dev/null 2>&1
+	elif command -v python3 >/dev/null 2>&1; then
+		printf '%s' "$1" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null
+	else
+		return 0    # no parser in the image: the host still validates every command
+	fi
+}
+
+usage() { sed -n '2,10s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+
+case "$1" in
+get)
+	[ -n "$2" ] || usage
+	f="$STATE_DIR/$2.json"
+	[ -f "$f" ] || { echo "no reading for '$2' yet" >&2; exit 1; }
+	cat "$f"
+	;;
+set)
+	[ -n "$2" ] && [ -n "$3" ] || usage
+	case "$2" in led|modem|gpio) ;; *) echo "cannot set '$2'" >&2; exit 2 ;; esac
+	valid_json "$3" || { echo "invalid JSON: $3" >&2; exit 2; }
+	port=$(find_port "$PORT_NAME") || { echo "hardware command port not found" >&2; exit 1; }
+	mkdir -p /var/lock
+	# The port allows one writer at a time: serialise writers.
+	if command -v flock >/dev/null 2>&1; then
+		( flock 9 && printf '%s\t%s\n' "$2" "$3" > "$port" ) 9>"$LOCK"
+		exit $?
+	fi
+	lock "$LOCK"    # OpenWrt's lock(1)
+	printf '%s\t%s\n' "$2" "$3" > "$port"
+	rc=$?
+	lock -u "$LOCK"
+	exit $rc
+	;;
+*)
+	usage
+	;;
+esac

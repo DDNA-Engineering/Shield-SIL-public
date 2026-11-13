@@ -1,0 +1,12 @@
+# Tells the harness that boot has finished (same marker as the OpenWrt images).
+[Unit]
+Description=Shield SIL boot-done marker
+After=NetworkManager.service shield-hwd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/touch /run/shield-sil.boot-done
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,122 @@
+From 531f7a88139efeaea1cc81b2c80382761dc588ef Mon Sep 17 00:00:00 2001
+From: SquadronConsult <michael@defense-dna.com>
+Date: Tue, 10 Nov 2026 04:44:36 +0000
+Subject: [PATCH 5/5] hw/arm/imx8mp-evk: optional eMMC on a uSDHC as the boot
+ device
+
+emmc-slot=N attaches the -drive if=sd,bus=N-1 as an eMMC with
+emmc-boot-partition-size bytes per boot partition, and reports it as the
+boot device through the boot ROM API.
+---
+ hw/arm/imx8mp-evk.c | 67 ++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 66 insertions(+), 1 deletion(-)
+
+diff --git a/hw/arm/imx8mp-evk.c b/hw/arm/imx8mp-evk.c
+index 44e0601..3e5d0fd 100644
+--- a/hw/arm/imx8mp-evk.c
++++ b/hw/arm/imx8mp-evk.c
+@@ -17,6 +17,7 @@
+ #include "system/qtest.h"
+ #include "qemu/error-report.h"
+ #include "qapi/error.h"
++#include "qapi/visitor.h"
+ #include <libfdt.h>
+ 
+ static void imx8mp_evk_modify_dtb(const struct arm_boot_info *info, void *fdt)
+@@ -55,6 +56,47 @@ static void imx8mp_evk_modify_dtb(const struct arm_boot_info *info, void *fdt)
+     }
+ }
+ 
++/*
++ * Optional eMMC: "emmc-slot" (1-3) puts the -drive if=sd,bus=<slot - 1>
++ * on that uSDHC as an eMMC device (with "emmc-boot-partition-size" bytes in
++ * each of its two boot partitions) instead of an SD card, and makes it the
++ * boot device the ROM reports.
++ */
++static struct {
++    uint32_t emmc_slot;
++    uint64_t emmc_boot_size;
++} imx8mp_evk_opts;
++
++static void imx8mp_evk_get_uint(Object *obj, Visitor *v, const char *name,
++                                void *opaque, Error **errp)
++{
++    if (!strcmp(name, "emmc-slot")) {
++        visit_type_uint32(v, name, &imx8mp_evk_opts.emmc_slot, errp);
++    } else {
++        visit_type_size(v, name, &imx8mp_evk_opts.emmc_boot_size, errp);
++    }
++}
++
++static void imx8mp_evk_set_uint(Object *obj, Visitor *v, const char *name,
++                                void *opaque, Error **errp)
++{
++    if (!strcmp(name, "emmc-slot")) {
++        uint32_t slot;
++
++        if (!visit_type_uint32(v, name, &slot, errp)) {
++            return;
++        }
++        if (slot > FSL_IMX8MP_NUM_USDHCS) {
++            error_setg(errp, "emmc-slot must be 1 to %d (0: none)",
++                       FSL_IMX8MP_NUM_USDHCS);
++            return;
++        }
++        imx8mp_evk_opts.emmc_slot = slot;
++    } else {
++        visit_type_size(v, name, &imx8mp_evk_opts.emmc_boot_size, errp);
++    }
++}
++
+ static void imx8mp_evk_init(MachineState *machine)
+ {
+     static struct arm_boot_info boot_info;
+@@ -77,6 +119,12 @@ static void imx8mp_evk_init(MachineState *machine)
+     s = FSL_IMX8MP(object_new(TYPE_FSL_IMX8MP));
+     object_property_add_child(OBJECT(machine), "soc", OBJECT(s));
+     object_property_set_uint(OBJECT(s), "fec1-phy-num", 1, &error_fatal);
++    if (imx8mp_evk_opts.emmc_slot) {
++        /* ROM API boot device: MMC (type 2), instance = uSDHC index */
++        object_property_set_uint(OBJECT(s), "boot-device",
++                                 (2 << 16) | ((imx8mp_evk_opts.emmc_slot - 1) << 8),
++                                 &error_fatal);
++    }
+     sysbus_realize_and_unref(SYS_BUS_DEVICE(s), &error_fatal);
+ 
+     memory_region_add_subregion(get_system_memory(), FSL_IMX8MP_RAM_START,
+@@ -94,7 +142,13 @@ static void imx8mp_evk_init(MachineState *machine)
+ 
+         blk = blk_by_legacy_dinfo(di);
+         bus = qdev_get_child_bus(DEVICE(&s->usdhc[i]), "sd-bus");
+-        carddev = qdev_new(TYPE_SD_CARD);
++        if (i + 1 == imx8mp_evk_opts.emmc_slot) {
++            carddev = qdev_new(TYPE_EMMC);
++            qdev_prop_set_uint64(carddev, "boot-partition-size",
++                                 imx8mp_evk_opts.emmc_boot_size);
++        } else {
++            carddev = qdev_new(TYPE_SD_CARD);
++        }
+         qdev_prop_set_drive_err(carddev, "drive", blk, &error_fatal);
+         qdev_realize_and_unref(carddev, bus, &error_fatal);
+     }
+@@ -120,6 +174,17 @@ static void imx8mp_evk_machine_init(MachineClass *mc)
+     mc->max_cpus = FSL_IMX8MP_NUM_CPUS;
+     mc->default_ram_id = "imx8mp-evk.ram";
+     mc->get_default_cpu_type = imx8mp_evk_get_default_cpu_type;
++
++    object_class_property_add(OBJECT_CLASS(mc), "emmc-slot", "uint32",
++                              imx8mp_evk_get_uint, imx8mp_evk_set_uint,
++                              NULL, NULL);
++    object_class_property_set_description(OBJECT_CLASS(mc), "emmc-slot",
++        "uSDHC (1-3) whose -drive if=sd is an eMMC and the boot device");
++    object_class_property_add(OBJECT_CLASS(mc), "emmc-boot-partition-size",
++                              "size", imx8mp_evk_get_uint, imx8mp_evk_set_uint,
++                              NULL, NULL);
++    object_class_property_set_description(OBJECT_CLASS(mc),
++        "emmc-boot-partition-size", "size of each eMMC boot partition");
+ }
+ 
+ DEFINE_MACHINE_AARCH64("imx8mp-evk", imx8mp_evk_machine_init)
+-- 
+2.43.0
+

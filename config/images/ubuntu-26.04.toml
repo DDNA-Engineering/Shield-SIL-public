@@ -1,0 +1,52 @@
+description = "Ubuntu Server 26.04 LTS (arm64 cloud image) set up as a Shield router"
+
+[build]
+builder = "ubuntu"
+release = "26.04"
+codename = "resolute"
+# Cloud image serial (cloud-images.ubuntu.com/releases/resolute/release-<serial>/).
+# Pinned so every build is the same; bump it to take a newer Ubuntu release.
+serial = "20261016"
+# Shield's Ubuntu eMMC (GPT: boot, rootfs, cidata, data) booted by U-Boot.
+storage = "emmc"
+
+[image]
+# U-Boot (image/uboot/) loads boot.scr, the kernel and the initrd from the eMMC's
+# FAT "boot" partition, as Shield's Ubuntu boots. Needs QEMU 9.2 or newer.
+storage = "emmc"
+firmware = "build/images/ubuntu-26.04/u-boot.bin"
+kernel = ""
+initrd = ""
+# The kernel command line is in boot.scr (image/uboot/ubuntu-boot.cmd); it keeps
+# the Shield port names with net.ifnames=0: eth0 LAN, eth1 WAN.
+append = ""
+disk = "build/images/ubuntu-26.04/emmc.img"
+disk_format = "raw"
+# The board's watchdog is there; Shield's Ubuntu does not feed it.
+watchdog = true
+
+[guest]
+adapter = "linux"
+# Root is logged in automatically on the serial console.
+shell_prompt = 'root@[^:]+:[^#]*# $'
+ready_command = "test -e /run/shield-sil.boot-done"
+# Ubuntu does much more at boot than OpenWrt. ~2 min on a fast host, but slow CI
+# runners have taken ~10 min under emulation.
+boot_timeout_s = 1500
+hw_agent = true
+# Shield's LEDs, named GPIOs and USB devices (modem, I2C, button) through Linux
+# drivers, as on the OpenWrt images.
+board_interfaces = true
+
+[network]
+# The LAN address is on the bridge (eth0, usb0 and the Wi-Fi AP are its ports).
+lan_ifname = "br-lan"
+# Cellular data goes through the emulated EM7595 (USB/IP, QMI raw-IP):
+# ModemManager + NetworkManager bring up wanb on wwan0. No stand-in NIC.
+cellular = "modem"
+wwan_ifname = "wwan0"
+# USB-C usb0 in br-lan, with a simulated laptop on the other end
+# (docs/guest-interfaces.md). "gadget": Shield's USB network gadget (CDC
+# Ethernet on the USB/IP device controller), the laptop is its USB host.
+# "nic": a plain NIC named usb0 (fallback). "off": no laptop.
+usbc = "gadget"

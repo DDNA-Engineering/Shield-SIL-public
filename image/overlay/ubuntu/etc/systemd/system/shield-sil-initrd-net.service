@@ -1,0 +1,20 @@
+# Shield SIL: undo the network setup of the generic cloud initrd.
+#
+# Shield's Ubuntu kernel boots without an initrd. The SIL boots the upstream
+# kernel, whose eMMC drivers are modules, so it loads Ubuntu's generic initrd,
+# and that initrd's systemd-networkd takes a DHCP lease on every NIC. Left in
+# place, NetworkManager adopts them as external connections instead of starting
+# its own profiles (wan, silmgmt). Flush them before NetworkManager starts.
+[Unit]
+Description=Shield SIL: flush addresses left by the initrd
+DefaultDependencies=no
+Before=NetworkManager.service network-pre.target
+Wants=network-pre.target
+After=systemd-udevd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/shield-sil/initrd-net-flush
+
+[Install]
+WantedBy=sysinit.target

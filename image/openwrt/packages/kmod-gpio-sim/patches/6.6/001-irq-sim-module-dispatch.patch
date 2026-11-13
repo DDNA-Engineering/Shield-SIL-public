@@ -1,0 +1,19 @@
+irq_sim: dispatch with generic_handle_irq() when built as part of a module
+
+irq_to_desc() is not exported to modules. Every simulated interrupt is mapped
+with handle_simple_irq as its flow handler, so generic_handle_irq() runs the
+same handler through the exported API. Only needed because this copy of
+irq_sim.c is linked into gpio-sim.ko instead of the kernel (CONFIG_IRQ_SIM
+is off in the OpenWrt armsr kernel).
+
+--- a/irq_sim.c
++++ b/irq_sim.c
+@@ -110,7 +110,7 @@
+ 				       work_ctx->irq_count, offset);
+ 		clear_bit(offset, work_ctx->pending);
+ 		irqnum = irq_find_mapping(work_ctx->domain, offset);
+-		handle_simple_irq(irq_to_desc(irqnum));
++		generic_handle_irq(irqnum);
+ 	}
+ }
+ 

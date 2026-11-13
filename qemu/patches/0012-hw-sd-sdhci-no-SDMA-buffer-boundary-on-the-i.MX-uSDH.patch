@@ -1,0 +1,41 @@
+From 9704a7ae20edfcaffebec2f3617b548e6f310036 Mon Sep 17 00:00:00 2001
+From: SquadronConsult <michael@defense-dna.com>
+Date: Tue, 10 Nov 2026 09:32:29 +0000
+Subject: [PATCH] hw/sd/sdhci: no SDMA buffer boundary on the i.MX uSDHC
+
+The uSDHC has no SDMA buffer boundary: the BLK_ATT bits that hold it on a
+standard SDHCI are reserved, and an SDMA transfer runs to the end. The
+uSDHC write path fills the field with 512 KiB, so a transfer from a
+512 KiB aligned address stopped there with a DMA interrupt. U-Boot's
+fsl_esdhc_imx never restarts a transfer at a boundary (it does not need
+to on the hardware), so any read of more than 1024 blocks into an aligned
+buffer, such as loading the kernel, hung until the watchdog reset the
+board.
+---
+ hw/sd/sdhci.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/hw/sd/sdhci.c b/hw/sd/sdhci.c
+index b1894af..656d7f8 100644
+--- a/hw/sd/sdhci.c
++++ b/hw/sd/sdhci.c
+@@ -633,6 +633,16 @@ static void sdhci_sdma_transfer_multi_blocks(SDHCIState *s)
+         page_aligned = true;
+     }
+ 
++    /*
++     * The i.MX uSDHC has no SDMA buffer boundary (the BLK_ATT bits that
++     * hold it on a standard SDHCI are reserved): an SDMA transfer runs to
++     * the end without a DMA interrupt in between. U-Boot's fsl_esdhc_imx
++     * driver relies on this and never restarts a transfer at a boundary.
++     */
++    if (object_dynamic_cast(OBJECT(s), TYPE_IMX_USDHC)) {
++        page_aligned = false;
++    }
++
+     s->prnsts |= SDHC_DATA_INHIBIT | SDHC_DAT_LINE_ACTIVE;
+     if (s->trnmod & SDHC_TRNS_READ) {
+         s->prnsts |= SDHC_DOING_READ;
+-- 
+2.43.0
+

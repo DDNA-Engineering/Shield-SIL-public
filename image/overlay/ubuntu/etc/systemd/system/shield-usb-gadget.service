@@ -1,0 +1,14 @@
+# USB-C usb0 as Shield's USB network gadget (network.usbc = "gadget"),
+# exported to the SIL's simulated laptop over USB/IP.
+[Unit]
+Description=Shield SIL USB-C network gadget
+After=systemd-modules-load.service
+Before=NetworkManager.service
+
+[Service]
+ExecStart=/usr/sbin/shield-usb-gadget
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

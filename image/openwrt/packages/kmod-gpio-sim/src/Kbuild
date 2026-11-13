@@ -1,0 +1,4 @@
+# Upstream gpio-sim, built out of tree for kernels with CONFIG_GPIO_SIM unset.
+# CONFIG_IRQ_SIM is built-in only, so irq_sim.c is linked into this module.
+obj-m += gpio-sim.o
+gpio-sim-y := gpio-sim-main.o irq_sim.o

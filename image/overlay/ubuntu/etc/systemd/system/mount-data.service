@@ -1,0 +1,17 @@
+# Shield SIL: the eMMC "data" partition at /root/data, given an ext4 file
+# system on first use. Without Shield's eMMC (no partition named "data") it
+# does nothing.
+[Unit]
+Description=Shield data partition at /root/data
+DefaultDependencies=no
+After=local-fs.target systemd-udev-settle.service
+Before=multi-user.target
+ConditionPathExists=/dev/disk/by-partlabel/data
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'mkdir -p /root/data; mountpoint -q /root/data && exit 0; mount -t ext4 -o noatime /dev/disk/by-partlabel/data /root/data 2>/dev/null && exit 0; echo "no file system on the data partition: making ext4"; mkfs.ext4 -q -F -E nodiscard,lazy_itable_init=1,lazy_journal_init=1 -L data /dev/disk/by-partlabel/data && mount -t ext4 -o noatime /dev/disk/by-partlabel/data /root/data'
+
+[Install]
+WantedBy=multi-user.target

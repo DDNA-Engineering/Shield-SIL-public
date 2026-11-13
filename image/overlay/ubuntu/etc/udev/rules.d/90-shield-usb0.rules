@@ -1,0 +1,4 @@
+# Shield SIL: NetworkManager leaves USB gadget network interfaces unmanaged by
+# default (85-nm-unmanaged.rules). Shield's usb0 gadget is a br-lan port, so
+# let NetworkManager manage it (profile lan-usb0).
+SUBSYSTEM=="net", ACTION=="add|change", ENV{DEVTYPE}=="gadget", ENV{NM_UNMANAGED}="0"

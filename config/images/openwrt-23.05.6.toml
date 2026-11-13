@@ -1,0 +1,17 @@
+description = "Upstream OpenWrt 23.05.6 (armsr/armv8) with the Shield default configuration"
+
+[build]
+builder = "openwrt"
+tag = "armsr-armv8-v23.05.6"
+packages_file = "image/openwrt/release-packages.list"
+
+[image]
+kernel = "build/images/openwrt-23.05.6/kernel.bin"
+initrd = ""
+append = "root=/dev/vda rootwait console=ttyAMA0 noinitrd"
+disk = "build/images/openwrt-23.05.6/rootfs.ext4"
+disk_format = "raw"
+
+[guest]
+adapter = "openwrt"
+hw_agent = true

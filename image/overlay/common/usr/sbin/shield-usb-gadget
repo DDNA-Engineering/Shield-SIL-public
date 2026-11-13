@@ -1,0 +1,69 @@
+#!/bin/sh
+# shield-usb-gadget: Shield's USB-C port as a USB network gadget (usb0).
+#
+# With network.usbc = "gadget" the SIL presents the USB device side the way
+# Shield does: the Linux gadget stack (configfs, libcomposite) with the CDC
+# Ethernet (ECM) function, which creates usb0. The device controller is the
+# USB/IP virtual device controller (usbip-vudc), and a USB/IP exporter
+# (shield-vudc-exportd on OpenWrt, usbipd --device on Ubuntu) exports it
+# on the SIL management link (port 3240), where the host's simulated laptop
+# imports it as a USB host would (src/shield_sil/usbip/ecm_host.py). Pulling
+# the cable ends that connection; usb0 loses carrier.
+#
+# With network.usbc = "nic" the SIL gives the guest a plain NIC for usb0
+# instead (MAC 52:54:00:5e:00:13); then this agent does nothing.
+#
+# Runs in the foreground (procd on OpenWrt, systemd on Ubuntu): it is usbipd.
+
+USB_NIC_MAC=52:54:00:5e:00:13
+CONFIGFS=/sys/kernel/config
+G=$CONFIGFS/usb_gadget/shield
+
+log() { logger -t shield-usb-gadget "$*" 2>/dev/null || echo "shield-usb-gadget: $*" >&2; }
+
+for a in /sys/class/net/*/address; do
+	[ "$(cat "$a" 2>/dev/null)" = "$USB_NIC_MAC" ] && { log "usb0 is a plain NIC; no gadget"; exec sleep 2147483647; }
+done
+
+# libcomposite is built into some kernels (OpenWrt 25.12 armsr): a module there
+# only when it is not, so the configfs gadget directory is the check for it.
+modprobe libcomposite 2>/dev/null
+for m in usb_f_ecm usbip-vudc; do
+	modprobe "$m" 2>/dev/null || [ -d "/sys/module/$(echo "$m" | tr - _)" ] || { log "module $m missing"; exit 1; }
+done
+mountpoint -q "$CONFIGFS" 2>/dev/null || mount -t configfs none "$CONFIGFS"
+[ -d "$CONFIGFS/usb_gadget" ] || { log "no configfs gadget support (libcomposite)"; exit 1; }
+
+udc=""
+for u in /sys/class/udc/usbip-vudc.*; do [ -e "$u" ] && udc=${u##*/} && break; done
+[ -n "$udc" ] || { log "no usbip-vudc device controller"; exit 1; }
+
+if [ ! -d "$G" ]; then
+	mkdir -p "$G"
+	# Linux Foundation "Multifunction Composite Gadget": the ID configfs gadgets use.
+	echo 0x1d6b > "$G/idVendor"
+	echo 0x0104 > "$G/idProduct"
+	echo 0x0100 > "$G/bcdDevice"
+	echo 0x0200 > "$G/bcdUSB"
+	mkdir -p "$G/strings/0x409"
+	echo "Shield SIL" > "$G/strings/0x409/manufacturer"
+	echo "Shield USB-C network" > "$G/strings/0x409/product"
+	echo "shield-sil-usbc" > "$G/strings/0x409/serialnumber"
+	mkdir -p "$G/functions/ecm.usb0"
+	# Locally administered, fixed: the same on every boot, as the host side's MAC.
+	echo 02:5e:00:00:00:01 > "$G/functions/ecm.usb0/dev_addr"
+	echo 02:5e:00:00:00:02 > "$G/functions/ecm.usb0/host_addr"
+	mkdir -p "$G/configs/c.1/strings/0x409"
+	echo "CDC Ethernet" > "$G/configs/c.1/strings/0x409/configuration"
+	echo 250 > "$G/configs/c.1/MaxPower"
+	ln -s "$G/functions/ecm.usb0" "$G/configs/c.1/"
+fi
+[ "$(cat "$G/UDC" 2>/dev/null)" = "$udc" ] || echo "$udc" > "$G/UDC" || { log "cannot bind gadget to $udc"; exit 1; }
+log "gadget bound to $udc, interface $(cat "$G/functions/ecm.usb0/ifname" 2>/dev/null)"
+
+# OpenWrt: shield-vudc-exportd (its usbipd links libudev-zero, which cannot
+# enumerate a UDC). Ubuntu: usbipd --device.
+[ -x /usr/sbin/shield-vudc-exportd ] && exec /usr/sbin/shield-vudc-exportd 3240
+for d in /usr/sbin/usbipd /usr/bin/usbipd; do [ -x "$d" ] && exec "$d" --device; done
+log "no USB/IP device-side exporter (shield-vudc-exportd or usbipd) installed"
+exit 1

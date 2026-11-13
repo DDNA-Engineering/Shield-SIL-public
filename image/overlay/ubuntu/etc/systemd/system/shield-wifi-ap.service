@@ -1,0 +1,15 @@
+# Shield's Wi-Fi AP: hostapd on the first simulated radio, bridged into br-lan.
+# Starts when the radio's interface appears (10-shield-wifi-ap.link names it).
+[Unit]
+Description=Shield Wi-Fi AP (hostapd)
+BindsTo=sys-subsystem-net-devices-mwiphy0\x2dap0.device
+After=sys-subsystem-net-devices-mwiphy0\x2dap0.device NetworkManager.service
+
+[Service]
+ExecStart=/usr/sbin/hostapd /etc/hostapd/shield-ap.conf
+# hostapd adds the AP to br-lan, which NetworkManager creates; retry until it exists.
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=sys-subsystem-net-devices-mwiphy0\x2dap0.device

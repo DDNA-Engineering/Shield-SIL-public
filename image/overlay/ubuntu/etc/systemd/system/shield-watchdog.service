@@ -1,0 +1,19 @@
+# Shield SIL: load the board's hardware watchdog driver: imx2_wdt for WDOG1 on
+# the i.MX 8M Plus machine (as on Shield), QEMU's i6300esb on virt. The driver
+# for the other machine finds no device and stays idle. Ubuntu deny-lists
+# watchdog drivers, which also stops systemd-modules-load from loading them;
+# modprobe by name does not.
+[Unit]
+Description=Shield SIL: hardware watchdog driver
+DefaultDependencies=no
+After=systemd-udevd.service
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=-/sbin/modprobe imx2_wdt
+ExecStart=-/sbin/modprobe i6300esb
+
+[Install]
+WantedBy=sysinit.target

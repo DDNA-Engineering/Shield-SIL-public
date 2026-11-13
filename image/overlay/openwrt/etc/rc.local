@@ -1,0 +1,7 @@
+# Put your custom commands here that should be executed once
+# the system init finished. By default this file does nothing.
+
+# Shield SIL: tell the harness that init has finished.
+touch /var/run/shield-sil.boot-done
+
+exit 0

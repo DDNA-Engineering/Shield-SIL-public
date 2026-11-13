@@ -1,0 +1,75 @@
+# Packages added to upstream OpenWrt (imx/cortexa53) for the Shield SIL guest
+# on the i.MX 8M Plus machine. Same as shield-packages.list, except where the
+# SoC's own drivers replace the SIL's stand-ins (noted below).
+#
+# Only upstream OpenWrt packages (release feeds) and the upstream-source kernel
+# modules under image/openwrt/packages/. No Shield firmware packages:
+# their scripts are run against the SIL as-is, not baked in here.
+# One package per line; '-name' removes a default package.
+
+# Match the official release images: the ImageBuilder's defaults leave out
+# LuCI and rpcd, which the release builds add.
+luci
+
+# Cellular (stock EM7595 over USB): qcserial AT/DM ports, QMI net + control,
+# ModemManager drives it as the 'wanb' interface.
+kmod-usb-serial-qualcomm
+kmod-usb-serial-option
+kmod-usb-net-qmi-wwan
+kmod-usb-wdm
+modemmanager
+qmi-utils
+
+# WAN failover between wan (eth) and wanb (cellular).
+mwan3
+
+# Battery path: /dev/i2c-1 to the TPS25751 PD controller, which proxies the
+# BQ25792 charger: the SoC's I2C2 (i2c-imx, built into the imx kernel).
+i2c-tools
+
+# The SIL attaches the modem over USB/IP.
+kmod-usbip-client
+usbip-client
+
+# USB-C usb0 as Shield's USB network gadget (network.usbc = "gadget"): the
+# gadget stack and CDC Ethernet function on the USB/IP virtual device
+# controller, exported to the SIL's simulated laptop by shield-vudc-exportd
+# (what `usbipd --device` does; OpenWrt's usbipd cannot find a UDC through
+# libudev-zero, see image/openwrt/packages/shield-vudc-exportd/Makefile).
+kmod-usb-gadget-vudc
+shield-vudc-exportd
+
+# Named GPIOs (shield:cell:sim-select, ...): SoC GPIO4 lines named by the
+# device tree (gpio-mxc, built in). Front-panel LEDs: gpio-leds.
+gpiod-tools
+kmod-leds-gpio
+
+# CPU speed probe for the SIL's speed limit (docs/calibration.md).
+dhrystone
+
+# Wi-Fi (Shield: MAYA-W260 / NXP IW611, AP mwiphy0-ap0 in br-lan). The SIL uses
+# the kernel's simulated radios (mac80211_hwsim): radio 0 is Shield's AP,
+# radio 1 is a Wi-Fi client in its own network namespace.
+kmod-mac80211-hwsim
+wpad-basic-mbedtls
+iw
+ip-full
+
+# Front-panel button: gpio-keys BTN_0 input events become /etc/rc.button/BTN_0
+# calls.
+kmod-input-gpio-keys
+kmod-button-hotplug
+
+# eMMC boot (image/builders/emmc.py, image/uboot/): fw_printenv/fw_setenv for
+# the U-Boot environment (slot switch: fw_setenv distro_bootpart), the f2fs
+# overlay on the squashfs root, mkfs.ext4 for the data partition, and the
+# board watchdog (the i.MX8M Plus WDOG, imx2-wdt, built in), which procd feeds.
+uboot-envtools
+kmod-fs-f2fs
+mkf2fs
+e2fsprogs
+# Shield's second GbE port (the EQoS) is a PCIe e1000e in the SIL.
+kmod-e1000e
+
+# The SIL hardware bus runs on UART1/UART3: shield-hwd sets them to raw mode.
+coreutils-stty

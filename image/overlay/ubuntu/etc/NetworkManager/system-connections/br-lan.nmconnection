@@ -1,0 +1,19 @@
+# Shield LAN: bridge of the LAN port (eth0), USB-C usb0 and the Wi-Fi AP, gateway
+# 192.168.100.1/24 with DHCP for clients (.100-.249, as on the OpenWrt images)
+# and NAT to the uplinks.
+[connection]
+id=lan
+type=bridge
+interface-name=br-lan
+autoconnect=true
+
+[bridge]
+stp=false
+
+[ipv4]
+method=shared
+address1=192.168.100.1/24
+shared-dhcp-range=192.168.100.100,192.168.100.249
+
+[ipv6]
+method=disabled

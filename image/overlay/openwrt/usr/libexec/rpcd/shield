@@ -1,0 +1,46 @@
+#!/bin/sh
+# rpcd plugin: exposes the simulated hardware on ubus as object "shield".
+#   ubus call shield status
+#   ubus call shield bms            (also: pd thermal modem leds)
+#   ubus call shield set_led '{"name":"Battery","state":"on"}'
+
+STATE_DIR=/var/run/shield
+DEVICES="bms pd thermal modem leds"
+
+reading() {
+	if [ -f "$STATE_DIR/$1.json" ]; then cat "$STATE_DIR/$1.json"; else echo '{}'; fi
+}
+
+case "$1" in
+list)
+	printf '{'
+	for d in $DEVICES; do printf '"%s":{},' "$d"; done
+	printf '"status":{},"set_led":{"name":"str","state":"str"},'
+	printf '"modem_reset":{}}\n'
+	;;
+call)
+	read -r input
+	case "$2" in
+	status)
+		printf '{'
+		sep=''
+		for d in $DEVICES; do printf '%s"%s":%s' "$sep" "$d" "$(reading "$d")"; sep=','; done
+		printf '}\n'
+		;;
+	bms|pd|thermal|modem|leds)
+		reading "$2"
+		;;
+	set_led)
+		name=$(echo "$input" | jsonfilter -e '@.name')
+		state=$(echo "$input" | jsonfilter -e '@.state')
+		/usr/sbin/shield-hw set led "{\"name\":\"$name\",\"state\":\"$state\"}" && echo '{"ok":true}'
+		;;
+	modem_reset)
+		/usr/sbin/shield-hw set modem '{"action":"reset"}' && echo '{"ok":true}'
+		;;
+	*)
+		echo '{"error":"unknown method"}'
+		;;
+	esac
+	;;
+esac

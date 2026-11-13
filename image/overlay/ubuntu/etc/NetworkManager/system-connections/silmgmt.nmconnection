@@ -1,0 +1,18 @@
+# SIL management link: host simulator services (USB/IP server). Not part of
+# any Shield network role: static address, no gateway, no DNS.
+[connection]
+id=silmgmt
+type=ethernet
+autoconnect=true
+
+[ethernet]
+mac-address=52:54:00:5E:00:1F
+
+[ipv4]
+method=manual
+address1=10.0.2.15/24
+never-default=true
+ignore-auto-dns=true
+
+[ipv6]
+method=disabled

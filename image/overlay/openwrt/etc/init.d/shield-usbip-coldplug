@@ -1,0 +1,37 @@
+#!/bin/sh /etc/rc.common
+# Shield SIL: hold boot until the SIL's USB devices are attached.
+#
+# On Shield the EM7595 and the I2C controllers are present when the kernel
+# boots, so ModemManager (START=70) finds them already enumerated and picks
+# them up from its coldplug cache. In the SIL they arrive over USB/IP
+# (shield-usbip, START=16) a few seconds into boot. Without this wait the
+# modem can enumerate while ModemManager is still starting, and
+# ModemManager's hotplug reporting loses it until a restart. Waits at most
+# 90 s, then lets boot continue either way.
+
+START=69
+
+boot() {
+	# Only images that run ModemManager on the emulated modem need to wait.
+	[ -x /usr/sbin/ModemManager ] && [ -x /usr/sbin/shield-usbip ] || return 0
+	state=/var/run/shield/usbip.json
+	vhci=/sys/devices/platform/vhci_hcd.0/status
+	n=0
+	while [ $n -lt 90 ]; do
+		if [ -s "$state" ] && [ -r "$vhci" ]; then
+			want=$(jsonfilter -i "$state" -e '@.busids[*]' 2>/dev/null | wc -l)
+			have=$(awk '$3 == "006"' "$vhci" | wc -l)
+			if [ "$want" -gt 0 ] && [ "$have" -ge "$want" ]; then
+				# Let the drivers bind (qcserial, qmi_wwan, cdc-wdm) and hotplug run.
+				sleep 3
+				logger -t shield-usbip "coldplug: $have USB devices attached after ${n}s"
+				return 0
+			fi
+		fi
+		sleep 1
+		n=$((n + 1))
+	done
+	logger -t shield-usbip "coldplug: USB devices not all attached after 90s; continuing boot"
+}
+
+start() { :; }

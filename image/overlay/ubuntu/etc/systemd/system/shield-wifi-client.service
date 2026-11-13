@@ -1,0 +1,14 @@
+# A Wi-Fi client device next to the emulated Shield: the second simulated radio
+# in its own network namespace, joining the Shield AP.
+[Unit]
+Description=Shield SIL simulated Wi-Fi client
+After=systemd-modules-load.service shield-wifi-ap.service
+ConditionPathExists=/sys/devices/virtual/mac80211_hwsim/hwsim1
+
+[Service]
+ExecStart=/usr/sbin/shield-wifi-client
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

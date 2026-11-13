@@ -1,0 +1,162 @@
+#!/bin/sh
+# shield-board: present Shield's front-panel LEDs and named GPIOs to the guest
+# through the standard Linux interfaces, and bridge them to the host models.
+#
+# LEDs: one uleds device per LED, so /sys/class/leds/<name> exists with the
+#   real names and every LED trigger works (heartbeat, timer, netdev, none).
+#   Each brightness change goes to the host as
+#     led {"name": "WAN", "brightness": 255, "trigger": "netdev"}
+# GPIOs: a gpio-sim chip with the real line names, usable from libgpiod
+#   (gpioset/gpioget/gpiofind) and /sys/class/gpio. Lines the guest drives
+#   go to the host as  gpio {"name": "shield:cell:sim-select", "value": 1};
+#   input lines follow the host's gpio_in state record
+#     {"shield:pgood:dc-efuse": 1, ...}
+#
+# Names, directions and initial levels: /usr/share/shield-sil/board.conf
+
+. /usr/share/shield-sil/board.conf
+
+# "shield-board --needed" exits 1 where the SoC presents these interfaces
+# itself (the i.MX 8M Plus machine), so the service is not started there.
+if [ "$1" = --needed ]; then
+	soc_board && exit 1
+	exit 0
+fi
+
+STATE_DIR=${SHIELD_STATE_DIR:-/var/run/shield}
+CONFIGFS=/sys/kernel/config
+SIM=$CONFIGFS/gpio-sim/shield
+POLL=1
+
+log() { logger -t shield-board "$*" 2>/dev/null || echo "shield-board: $*" >&2; }
+
+send() { shield-hw set "$1" "$2" >/dev/null 2>&1 || log "could not send $1 $2"; }
+
+# One native-endian unsigned 32-bit integer from stdin, in decimal. OpenWrt's
+# busybox has hexdump but no od; Ubuntu has both.
+if command -v hexdump >/dev/null 2>&1; then
+	u32() { hexdump -e '1/4 "%u"'; }
+else
+	u32() { od -An -tu4 | tr -d ' \n'; }
+fi
+
+# --- LEDs --------------------------------------------------------------------
+# struct uleds_user_dev { char name[64]; int max_brightness; } must reach the
+# kernel in one write; then every read returns the new brightness (int).
+led_worker() {
+	name=$1
+	rec=/var/run/shield-uleds.$name
+	{
+		printf '%s' "$name"
+		dd if=/dev/zero bs=1 count=$((64 - ${#name})) 2>/dev/null
+		printf '\377\000\000\000'    # max_brightness 255, little endian
+	} > "$rec"
+	exec 3<>/dev/uleds || { log "LED $name: /dev/uleds unavailable"; return 1; }
+	dd if="$rec" bs=68 count=1 >&3 2>/dev/null || { log "LED $name: register failed"; return 1; }
+	rm -f "$rec"
+	while :; do
+		b=$(dd bs=4 count=1 <&3 2>/dev/null | u32)
+		[ -n "$b" ] || { sleep 1; continue; }
+		trig=$(sed -n 's/.*\[\([^]]*\)\].*/\1/p' "/sys/class/leds/$name/trigger" 2>/dev/null)
+		send led "{\"name\":\"$name\",\"brightness\":$b,\"trigger\":\"${trig:-none}\"}"
+	done
+}
+
+# --- GPIOs -------------------------------------------------------------------
+gpio_setup() {
+	modprobe gpio-sim 2>/dev/null
+	mountpoint -q "$CONFIGFS" 2>/dev/null || mount -t configfs none "$CONFIGFS" 2>/dev/null
+	[ -d "$CONFIGFS/gpio-sim" ] || { log "gpio-sim not available"; return 1; }
+	if [ ! -d "$SIM" ]; then
+		mkdir "$SIM" "$SIM/bank0" || return 1
+		set -- $GPIO_LINES
+		echo $# > "$SIM/bank0/num_lines"
+		echo shield > "$SIM/bank0/label"
+		i=0
+		for spec in $GPIO_LINES; do
+			mkdir "$SIM/bank0/line$i"
+			echo "$(line_name "$spec")" > "$SIM/bank0/line$i/name"
+			i=$((i + 1))
+		done
+		echo 1 > "$SIM/live" || return 1
+	fi
+	dev=$(cat "$SIM/dev_name") chip=$(cat "$SIM/bank0/chip_name")
+	SYSFS=/sys/devices/platform/$dev/$chip
+	# Levels before any consumer: an undriven line reads its pull.
+	i=0
+	for spec in $GPIO_LINES; do
+		set_pull "$i" "$(line_init "$spec")"
+		i=$((i + 1))
+	done
+	log "GPIO lines on $chip: $(for s in $GPIO_LINES; do printf '%s ' "$(line_name "$s")"; done)"
+}
+
+# Specs are "<name>=<in|out>:<initial>"; names contain ':' so split on '='.
+# Parameter expansion only: the poll loop below must not fork, because the
+# guest also has to keep up with the hardware bus under emulation.
+line_name() { echo "${1%=*}"; }
+line_init() { echo "${1##*:}"; }
+
+set_pull() {
+	if [ "$2" = 1 ]; then echo pull-up; else echo pull-down; fi > "$SYSFS/sim_gpio$1/pull"
+}
+
+# Host -> guest: input levels from the gpio_in record, parsed only when the
+# record's content changes.
+GPIO_IN_LAST=
+apply_inputs() {
+	f=$STATE_DIR/gpio_in.json
+	[ -s "$f" ] || return 0
+	read -r rec < "$f" || [ -n "$rec" ] || return 0
+	[ "$rec" = "$GPIO_IN_LAST" ] && return 0
+	GPIO_IN_LAST=$rec
+	i=0
+	for spec in $GPIO_LINES; do
+		d=${spec##*=}
+		if [ "${d%%:*}" = in ]; then
+			n=${spec%=*}
+			if command -v jsonfilter >/dev/null 2>&1; then
+				v=$(jsonfilter -s "$rec" -e "@['$n']" 2>/dev/null)
+			else
+				v=$(python3 -c 'import json,sys; v=json.loads(sys.argv[1]).get(sys.argv[2]); print("" if v is None else int(v))' "$rec" "$n" 2>/dev/null)
+			fi
+			case "$v" in true) v=1 ;; false) v=0 ;; esac
+			case "$v" in 0|1)
+				eval "cur=\${IN_$i:-}"
+				[ "$cur" = "$v" ] || { set_pull "$i" "$v"; eval "IN_$i=$v"; } ;;
+			esac
+		fi
+		i=$((i + 1))
+	done
+}
+
+# Guest -> host: report output lines when their level changes.
+report_outputs() {
+	i=0
+	for spec in $GPIO_LINES; do
+		d=${spec##*=}
+		if [ "${d%%:*}" = out ]; then
+			read -r v < "$SYSFS/sim_gpio$i/value"
+			eval "last=\${OUT_$i:-}"
+			if [ "$v" != "$last" ]; then
+				send gpio "{\"name\":\"${spec%=*}\",\"value\":$v}"
+				eval "OUT_$i=$v"
+			fi
+		fi
+		i=$((i + 1))
+	done
+}
+
+modprobe uleds 2>/dev/null
+for name in $LEDS; do
+	led_worker "$name" &
+done
+
+if gpio_setup; then
+	while :; do
+		apply_inputs
+		report_outputs
+		sleep "$POLL"
+	done
+fi
+wait

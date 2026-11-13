@@ -1,0 +1,3 @@
+# Shield SIL: the simulated laptop (host 10.0.2.2, management link) imports the
+# USB-C gadget from usbipd --device. Not a Shield port: management link only.
+ip saddr 10.0.2.2 ip daddr 10.0.2.15 tcp dport 3240 accept comment "SIL USB-C gadget (usbipd)"

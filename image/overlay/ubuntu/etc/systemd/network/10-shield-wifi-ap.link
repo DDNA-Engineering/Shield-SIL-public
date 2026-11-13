@@ -1,0 +1,7 @@
+# First simulated radio (mac80211_hwsim radio 0): Shield's AP interface name.
+[Match]
+PermanentMACAddress=02:00:00:00:00:00
+Driver=mac80211_hwsim
+
+[Link]
+Name=mwiphy0-ap0

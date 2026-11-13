@@ -1,0 +1,54 @@
+#!/bin/sh
+# shield-wifi-client: a Wi-Fi client device next to the emulated Shield.
+#
+# The SIL's second simulated radio (mac80211_hwsim radio 1) is moved into its
+# own network namespace, so it is a separate device with its own IP stack, as
+# a phone or laptop would be. It joins the Shield AP with WPA2 and takes a DHCP
+# lease from the Shield's LAN. Tests reach it with
+#   ip netns exec wificlient <cmd>
+# Runs in the foreground (procd on OpenWrt, systemd on Ubuntu); wpa_supplicant
+# and udhcpc are its children.
+. /usr/share/shield-sil/wifi.conf
+
+log() { logger -t shield-wifi-client "$*"; }
+NS=$WIFI_CLIENT_NETNS
+X="ip netns exec $NS"
+# OpenWrt has udhcpc as a command; Ubuntu has it as a busybox applet.
+UDHCPC=udhcpc
+command -v udhcpc >/dev/null 2>&1 || UDHCPC="busybox udhcpc"
+
+phy=""
+for p in /sys/class/ieee80211/*; do
+	[ "$(readlink -f "$p/device")" = "$WIFI_CLIENT_PHY_PATH" ] && phy=${p##*/}
+done
+ip netns add "$NS" 2>/dev/null
+if [ -n "$phy" ]; then
+	iw phy "$phy" set netns name "$NS" || { log "cannot move $phy to $NS"; exit 1; }
+	log "radio $phy moved to netns $NS"
+fi
+$X ip link set lo up
+$X iw dev wlan0 info >/dev/null 2>&1 || {
+	cphy=$($X iw phy | sed -n 's/^Wiphy //p' | head -n1)
+	[ -n "$cphy" ] || { log "no client radio in $NS"; exit 1; }
+	$X iw phy "$cphy" interface add wlan0 type managed
+}
+$X ip link set wlan0 up
+
+mkdir -p /var/run/shield-wifi-client
+conf=/var/run/shield-wifi-client/wpa.conf
+cat > "$conf" <<WPA
+ctrl_interface=/var/run/shield-wifi-client
+network={
+	ssid="$WIFI_SSID"
+	psk="$WIFI_KEY"
+	key_mgmt=WPA-PSK
+}
+WPA
+$X wpa_supplicant -i wlan0 -c "$conf" -s &
+WPA_PID=$!
+# Keep a lease while associated; udhcpc retries on its own.
+$X $UDHCPC -f -R -i wlan0 -s /usr/share/shield-sil/udhcpc-wifi-client.script &
+DHCP_PID=$!
+trap 'kill $WPA_PID $DHCP_PID 2>/dev/null' TERM INT
+wait $WPA_PID
+kill $DHCP_PID 2>/dev/null

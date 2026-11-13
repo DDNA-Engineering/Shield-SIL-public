@@ -1,0 +1,13 @@
+# Wired WAN: DHCP, preferred uplink (lower route metric than cellular).
+[connection]
+id=wan
+type=ethernet
+interface-name=eth1
+autoconnect=true
+
+[ipv4]
+method=auto
+route-metric=10
+
+[ipv6]
+method=disabled

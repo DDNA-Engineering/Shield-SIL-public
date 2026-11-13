@@ -1,0 +1,8 @@
+# br-lan port: USB-C usb0.
+[connection]
+id=lan-usb0
+type=ethernet
+interface-name=usb0
+controller=br-lan
+port-type=bridge
+autoconnect=true

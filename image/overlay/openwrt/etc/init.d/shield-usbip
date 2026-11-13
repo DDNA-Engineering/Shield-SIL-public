@@ -1,0 +1,13 @@
+#!/bin/sh /etc/rc.common
+# Shield SIL USB devices (modem, I2C adapters) attached over USB/IP.
+
+START=16
+USE_PROCD=1
+
+start_service() {
+	procd_open_instance
+	procd_set_param command /usr/sbin/shield-usbip
+	procd_set_param respawn 3600 2 0
+	procd_set_param stderr 1
+	procd_close_instance
+}

@@ -1,0 +1,16 @@
+#!/bin/sh /etc/rc.common
+# Shield SIL: simulated Wi-Fi client (see /usr/sbin/shield-wifi-client).
+# START=19: the client radio must be in its namespace before netifd (START=20)
+# configures Wi-Fi, so the Shield AP owns only radio 0.
+
+START=19
+USE_PROCD=1
+
+start_service() {
+	[ -d /sys/devices/virtual/mac80211_hwsim/hwsim1 ] || return 0
+	procd_open_instance
+	procd_set_param command /usr/sbin/shield-wifi-client
+	procd_set_param respawn 3600 5 0
+	procd_set_param stderr 1
+	procd_close_instance
+}

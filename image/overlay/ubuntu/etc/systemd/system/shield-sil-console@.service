@@ -1,0 +1,32 @@
+# Root shell on the serial console for the SIL harness, available early in boot.
+# One instance per machine's console: ttyAMA0 (QEMU virt) and ttymxc1 (i.MX 8M
+# Plus UART2); the one whose device is missing does not start.
+# Replaces serial-getty@ (masked by the builder), which waits for udev to
+# announce the tty device: under emulation that can take minutes. The kernel's
+# devtmpfs has the console's device from the start (both UART drivers are built
+# in), so nothing needs to wait.
+[Unit]
+Description=Shield SIL root console on %I
+DefaultDependencies=no
+After=systemd-journald.socket systemd-remount-fs.service
+Before=shutdown.target
+Conflicts=shutdown.target
+ConditionPathExists=/dev/%I
+
+[Service]
+ExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,57600,38400,9600 %I vt220
+Type=idle
+Restart=always
+RestartSec=0
+UtmpIdentifier=%I
+StandardInput=tty
+StandardOutput=tty
+TTYPath=/dev/%I
+TTYReset=yes
+TTYVHangup=yes
+IgnoreSIGPIPE=no
+SendSIGHUP=yes
+KillMode=process
+
+[Install]
+WantedBy=sysinit.target

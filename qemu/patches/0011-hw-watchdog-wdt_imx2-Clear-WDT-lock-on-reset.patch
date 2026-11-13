@@ -1,0 +1,54 @@
+From 1ff5ac7677ac0eb030246c324f1412c5590abd39 Mon Sep 17 00:00:00 2001
+From: Bernhard Beschow <shentey@gmail.com>
+Date: Sun, 4 Oct 2026 14:26:18 +0200
+Subject: [PATCH 11/11] hw/watchdog/wdt_imx2: Clear WDT lock on reset
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The WDT bit gets reset and becomes writeable after power on reset which
+imx2_wdt_reset() represents. While the WDT bit in the WCR register
+already gets reset, its locked attribute wasn't. Fix this inconsistency
+by adding the missing unlock of its locked attribute.
+
+Cc: qemu-stable@nongnu.org
+Fixes: daca13d495a1 ("hw/watchdog: Implement full i.MX watchdog support")
+Reported-by: Peter Maydell <peter.maydell@linaro.org>
+Reviewed-by: Bin Meng <bin.meng@processmission.com>
+Reviewed-by: Peter Maydell <peter.maydell@linaro.org>
+Signed-off-by: Bernhard Beschow <shentey@gmail.com>
+Message-ID: <20261006083445.30362-4-shentey@gmail.com>
+Signed-off-by: Philippe Mathieu-Daudé <philmd@oss.qualcomm.com>
+---
+ hw/watchdog/wdt_imx2.c         | 1 +
+ include/hw/watchdog/wdt_imx2.h | 2 +-
+ 2 files changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/hw/watchdog/wdt_imx2.c b/hw/watchdog/wdt_imx2.c
+index e217488..285bc27 100644
+--- a/hw/watchdog/wdt_imx2.c
++++ b/hw/watchdog/wdt_imx2.c
+@@ -60,6 +60,7 @@ static void imx2_wdt_reset(DeviceState *dev)
+     s->wicr_locked = false;
+     s->wcr_locked = false;
+     s->wcr_wde_locked = false;
++    s->wcr_wdt_locked = false;
+ 
+     s->wcr = IMX2_WDT_WCR_WDA | IMX2_WDT_WCR_SRS;
+     s->wsr = 0;
+diff --git a/include/hw/watchdog/wdt_imx2.h b/include/hw/watchdog/wdt_imx2.h
+index 600a552..d920c29 100644
+--- a/include/hw/watchdog/wdt_imx2.h
++++ b/include/hw/watchdog/wdt_imx2.h
+@@ -85,7 +85,7 @@ struct IMX2WdtState {
+ 
+     bool wcr_locked;            /* affects WDZST, WDBG, and WDW */
+     bool wcr_wde_locked;        /* affects WDE */
+-    bool wcr_wdt_locked;        /* affects WDT (never cleared) */
++    bool wcr_wdt_locked;        /* affects WDT, cleared on POR */
+ };
+ 
+ #endif /* WDT_IMX2_H */
+-- 
+2.43.0
+

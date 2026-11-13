@@ -1,0 +1,49 @@
+From 4cce43d18789da2dadebc55c678912961e83e8f0 Mon Sep 17 00:00:00 2001
+From: Bernhard Beschow <shentey@gmail.com>
+Date: Mon, 5 Oct 2026 12:17:29 +0200
+Subject: [PATCH 10/11] hw/watchdog/wdt_imx2: Fix handling of write one once
+ WCR bits
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In locked state, the WDE and WDT bits of the WCR register are one and
+need to be preserved when written. At the moment, the logic is reversed
+such that all but the locked bits are preserved in locked state. Fix
+that.
+
+Cc: qemu-stable@nongnu.org
+Fixes: daca13d495a1 ("hw/watchdog: Implement full i.MX watchdog support")
+Reported-by: Bin Meng <bin.meng@processmission.com>
+Reviewed-by: Bin Meng <bin.meng@processmission.com>
+Reviewed-by: Peter Maydell <peter.maydell@linaro.org>
+Signed-off-by: Bernhard Beschow <shentey@gmail.com>
+Message-ID: <20261006083445.30362-3-shentey@gmail.com>
+Signed-off-by: Philippe Mathieu-Daudé <philmd@oss.qualcomm.com>
+---
+ hw/watchdog/wdt_imx2.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/hw/watchdog/wdt_imx2.c b/hw/watchdog/wdt_imx2.c
+index 784ab79..e217488 100644
+--- a/hw/watchdog/wdt_imx2.c
++++ b/hw/watchdog/wdt_imx2.c
+@@ -161,13 +161,13 @@ static void imx2_wdt_write(void *opaque, hwaddr addr,
+         s->wcr_locked = true;
+         if (s->wcr_wde_locked) {
+             value &= ~IMX2_WDT_WCR_WDE;
+-            value |= (s->wcr & ~IMX2_WDT_WCR_WDE);
++            value |= (s->wcr & IMX2_WDT_WCR_WDE);
+         } else if (value & IMX2_WDT_WCR_WDE) {
+             s->wcr_wde_locked = true;
+         }
+         if (s->wcr_wdt_locked) {
+             value &= ~IMX2_WDT_WCR_WDT;
+-            value |= (s->wcr & ~IMX2_WDT_WCR_WDT);
++            value |= (s->wcr & IMX2_WDT_WCR_WDT);
+         } else if (value & IMX2_WDT_WCR_WDT) {
+             s->wcr_wdt_locked = true;
+         }
+-- 
+2.43.0
+

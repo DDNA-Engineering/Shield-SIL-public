@@ -1,0 +1,16 @@
+# Cellular WAN: the EM7595 through ModemManager (data on wwan0), backup uplink.
+[connection]
+id=wanb
+type=gsm
+autoconnect=true
+
+[gsm]
+apn=internet
+auto-config=false
+
+[ipv4]
+method=auto
+route-metric=20
+
+[ipv6]
+method=disabled

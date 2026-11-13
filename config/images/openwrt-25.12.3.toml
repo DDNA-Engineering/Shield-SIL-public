@@ -1,0 +1,37 @@
+description = "Upstream OpenWrt 25.12.3 (armsr/armv8) with the Shield default configuration"
+
+[build]
+builder = "openwrt"
+tag = "armsr-armv8-v25.12.3"
+packages_file = "image/openwrt/shield-packages.list"
+# Shield's eMMC (GPT, rescue + A/B slots) booted by U-Boot: image/builders/emmc.py.
+storage = "emmc"
+
+[image]
+# U-Boot (image/uboot/) boots slot A or B from the emulated eMMC, as on Shield.
+# Needs QEMU 9.2 or newer (the ./sil container has it).
+storage = "emmc"
+firmware = "build/images/openwrt-25.12.3/u-boot.bin"
+kernel = ""
+initrd = ""
+append = ""
+disk = "build/images/openwrt-25.12.3/emmc.img"
+disk_format = "raw"
+# Board watchdog: procd feeds /dev/watchdog; a hung system resets the board.
+watchdog = true
+
+[guest]
+adapter = "openwrt"
+hw_agent = true
+board_interfaces = true
+
+[network]
+# Cellular data goes through the emulated EM7595 (USB/IP, QMI raw-IP) as on
+# Shield: ModemManager brings up wanb on wwan0. No stand-in NIC.
+cellular = "modem"
+wwan_ifname = "wwan0"
+# USB-C usb0 in br-lan, with a simulated laptop on the other end
+# (docs/guest-interfaces.md). "gadget": Shield's USB network gadget (CDC
+# Ethernet on the USB/IP device controller), the laptop is its USB host.
+# "nic": a plain NIC named usb0 (fallback). "off": no laptop.
+usbc = "gadget"

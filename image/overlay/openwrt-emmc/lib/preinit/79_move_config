@@ -1,0 +1,19 @@
+# Shield SIL: the configuration saved by sysupgrade is on the running slot's
+# boot partition (/lib/upgrade/platform.sh); move it to / for 80_mount_root to
+# restore. /etc/init.d/done removes it after the boot.
+
+move_config() {
+	. /lib/upgrade/common.sh
+	. /lib/upgrade/shield.sh
+
+	if shield_slot_devices; then
+		if mount -t ext4 -o rw,noatime "/dev/$SHIELD_BOOTDEV" /mnt; then
+			if [ -f "/mnt/$BACKUP_FILE" ]; then
+				mv -f "/mnt/$BACKUP_FILE" /
+			fi
+			umount /mnt
+		fi
+	fi
+}
+
+boot_hook_add preinit_mount_root move_config

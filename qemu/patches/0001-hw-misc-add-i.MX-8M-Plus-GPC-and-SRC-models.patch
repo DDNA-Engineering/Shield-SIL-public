@@ -1,0 +1,391 @@
+From da8d070c8c60dc59345680df3e0a61d656e3d8bf Mon Sep 17 00:00:00 2001
+From: SquadronConsult <michael@defense-dna.com>
+Date: Tue, 10 Nov 2026 04:32:36 +0000
+Subject: [PATCH 1/5] hw/misc: add i.MX 8M Plus GPC and SRC models
+
+The GPC completes power-up/down requests at once and acknowledges bus
+handshakes, so TF-A and Linux power domain code no longer spin on an
+unimplemented device. The SRC starts secondary A53 cores at the entry
+point firmware stores in SRC_GPR1..8 when their reset bit is released,
+which TF-A uses for PSCI CPU_ON.
+---
+ hw/arm/Kconfig               |   1 +
+ hw/misc/Kconfig              |   3 +
+ hw/misc/imx8mp_gpc.c         | 114 +++++++++++++++++++++++++++++
+ hw/misc/imx8mp_src.c         | 138 +++++++++++++++++++++++++++++++++++
+ hw/misc/meson.build          |   1 +
+ include/hw/misc/imx8mp_gpc.h |  25 +++++++
+ include/hw/misc/imx8mp_src.h |  25 +++++++
+ 7 files changed, 307 insertions(+)
+ create mode 100644 hw/misc/imx8mp_gpc.c
+ create mode 100644 hw/misc/imx8mp_src.c
+ create mode 100644 include/hw/misc/imx8mp_gpc.h
+ create mode 100644 include/hw/misc/imx8mp_src.h
+
+diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
+index 7877506..7d45cb7 100644
+--- a/hw/arm/Kconfig
++++ b/hw/arm/Kconfig
+@@ -608,6 +608,7 @@ config FSL_IMX8MP
+     select ARM_GIC
+     select FSL_IMX8MP_ANALOG
+     select FSL_IMX8MP_CCM
++    select FSL_IMX8MP_PM
+     select IMX
+     select IMX_FEC
+     select IMX_I2C
+diff --git a/hw/misc/Kconfig b/hw/misc/Kconfig
+index fccd735..b2bc5a0 100644
+--- a/hw/misc/Kconfig
++++ b/hw/misc/Kconfig
+@@ -96,6 +96,9 @@ config FSL_IMX8MP_ANALOG
+ config FSL_IMX8MP_CCM
+     bool
+ 
++config FSL_IMX8MP_PM
++    bool
++
+ config STM32_RCC
+     bool
+ 
+diff --git a/hw/misc/imx8mp_gpc.c b/hw/misc/imx8mp_gpc.c
+new file mode 100644
+index 0000000..1192df2
+--- /dev/null
++++ b/hw/misc/imx8mp_gpc.c
+@@ -0,0 +1,114 @@
++/*
++ * i.MX 8M Plus General Power Controller (GPC)
++ *
++ * Power switching is instant: a power-up or power-down request for a core
++ * or a power domain completes as soon as it is written, so its trigger bit
++ * reads back as 0. Bus handshakes (GPC_PU_PWRHSK) acknowledge at once: each
++ * request bit in the low half is mirrored into the acknowledge bit 16 places
++ * up, which is the layout firmware and Linux expect. Everything else reads
++ * back what was written.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/module.h"
++#include "hw/misc/imx8mp_gpc.h"
++#include "migration/vmstate.h"
++
++#define GPC_CPU_PGC_UP_TRG  (0x0d0 / 4)
++#define GPC_PU_PGC_UP_TRG   (0x0d8 / 4)
++#define GPC_CPU_PGC_DN_TRG  (0x0dc / 4)
++#define GPC_PU_PGC_DN_TRG   (0x0e4 / 4)
++#define GPC_PU_PWRHSK       (0x190 / 4)
++
++static void imx8mp_gpc_reset(DeviceState *dev)
++{
++    IMX8MPGPCState *s = IMX8MP_GPC(dev);
++
++    memset(s->regs, 0, sizeof(s->regs));
++}
++
++static uint64_t imx8mp_gpc_read(void *opaque, hwaddr offset, unsigned size)
++{
++    IMX8MPGPCState *s = opaque;
++
++    return s->regs[offset / 4];
++}
++
++static void imx8mp_gpc_write(void *opaque, hwaddr offset, uint64_t value,
++                             unsigned size)
++{
++    IMX8MPGPCState *s = opaque;
++    unsigned idx = offset / 4;
++
++    switch (idx) {
++    case GPC_CPU_PGC_UP_TRG:
++    case GPC_PU_PGC_UP_TRG:
++    case GPC_CPU_PGC_DN_TRG:
++    case GPC_PU_PGC_DN_TRG:
++        s->regs[idx] = 0;
++        break;
++    case GPC_PU_PWRHSK:
++        value &= 0xffff;
++        s->regs[idx] = value | (value << 16);
++        break;
++    default:
++        s->regs[idx] = value;
++        break;
++    }
++}
++
++static const MemoryRegionOps imx8mp_gpc_ops = {
++    .read = imx8mp_gpc_read,
++    .write = imx8mp_gpc_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid = {
++        .min_access_size = 4,
++        .max_access_size = 4,
++        .unaligned = false,
++    },
++};
++
++static void imx8mp_gpc_init(Object *obj)
++{
++    IMX8MPGPCState *s = IMX8MP_GPC(obj);
++
++    memory_region_init_io(&s->iomem, obj, &imx8mp_gpc_ops, s,
++                          TYPE_IMX8MP_GPC, IMX8MP_GPC_MMIO_SIZE);
++    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
++}
++
++static const VMStateDescription vmstate_imx8mp_gpc = {
++    .name = TYPE_IMX8MP_GPC,
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT32_ARRAY(regs, IMX8MPGPCState, IMX8MP_GPC_MMIO_SIZE / 4),
++        VMSTATE_END_OF_LIST()
++    },
++};
++
++static void imx8mp_gpc_class_init(ObjectClass *klass, const void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++
++    device_class_set_legacy_reset(dc, imx8mp_gpc_reset);
++    dc->vmsd = &vmstate_imx8mp_gpc;
++    dc->desc = "i.MX 8M Plus General Power Controller";
++}
++
++static const TypeInfo imx8mp_gpc_info = {
++    .name          = TYPE_IMX8MP_GPC,
++    .parent        = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(IMX8MPGPCState),
++    .instance_init = imx8mp_gpc_init,
++    .class_init    = imx8mp_gpc_class_init,
++};
++
++static void imx8mp_gpc_register_types(void)
++{
++    type_register_static(&imx8mp_gpc_info);
++}
++
++type_init(imx8mp_gpc_register_types)
+diff --git a/hw/misc/imx8mp_src.c b/hw/misc/imx8mp_src.c
+new file mode 100644
+index 0000000..0ce920c
+--- /dev/null
++++ b/hw/misc/imx8mp_src.c
+@@ -0,0 +1,138 @@
++/*
++ * i.MX 8M Plus System Reset Controller (SRC)
++ *
++ * Models the parts firmware relies on: the per-core secure entry registers
++ * (SRC_GPR1..8) and the A53 core reset bits in SRC_A53RCR1. Releasing a
++ * secondary core from reset starts it at its entry point in EL3, which is
++ * what the boot ROM's reset handler does on hardware. The remaining
++ * registers read back what was written.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/log.h"
++#include "qemu/module.h"
++#include "hw/misc/imx8mp_src.h"
++#include "migration/vmstate.h"
++#include "target/arm/arm-powerctl.h"
++
++#define SRC_A53RCR0     (0x04 / 4)
++#define SRC_A53RCR1     (0x08 / 4)
++#define SRC_GPR1        (0x74 / 4)
++#define SRC_HDMI_RCR    (0x94 / 4)
++
++#define NUM_CORES 4
++
++static uint64_t imx8mp_src_entry(IMX8MPSRCState *s, int core)
++{
++    uint64_t hi = s->regs[SRC_GPR1 + core * 2] & 0xffff;
++    uint64_t lo = s->regs[SRC_GPR1 + core * 2 + 1] & 0x3fffff;
++
++    return ((hi << 22) | lo) << 2;
++}
++
++static void imx8mp_src_reset(DeviceState *dev)
++{
++    IMX8MPSRCState *s = IMX8MP_SRC(dev);
++
++    memset(s->regs, 0, sizeof(s->regs));
++    /* Core 0 runs out of reset; cores 1-3 are held in reset. */
++    s->regs[SRC_A53RCR1] = 0x1;
++    /* HDMI PHY PLL lock, polled by firmware when it powers HDMIMIX. */
++    s->regs[SRC_HDMI_RCR] = BIT(8);
++}
++
++static uint64_t imx8mp_src_read(void *opaque, hwaddr offset, unsigned size)
++{
++    IMX8MPSRCState *s = opaque;
++
++    return s->regs[offset / 4];
++}
++
++static void imx8mp_src_write(void *opaque, hwaddr offset, uint64_t value,
++                             unsigned size)
++{
++    IMX8MPSRCState *s = opaque;
++    unsigned idx = offset / 4;
++    uint32_t old = s->regs[idx];
++
++    s->regs[idx] = value;
++
++    if (idx != SRC_A53RCR1) {
++        return;
++    }
++    for (int core = 1; core < NUM_CORES; core++) {
++        uint32_t bit = BIT(core);
++
++        if ((old & bit) == (value & bit)) {
++            continue;
++        }
++        if (value & bit) {
++            uint64_t entry = imx8mp_src_entry(s, core);
++            int ret = arm_set_cpu_on(core, entry, 0, 3, true);
++
++            if (ret != QEMU_ARM_POWERCTL_RET_SUCCESS) {
++                qemu_log_mask(LOG_GUEST_ERROR,
++                              "imx8mp.src: core %d on at 0x%" PRIx64
++                              " failed (%d)\n", core, entry, ret);
++            }
++        } else {
++            arm_set_cpu_off(core);
++        }
++    }
++}
++
++static const MemoryRegionOps imx8mp_src_ops = {
++    .read = imx8mp_src_read,
++    .write = imx8mp_src_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid = {
++        .min_access_size = 4,
++        .max_access_size = 4,
++        .unaligned = false,
++    },
++};
++
++static void imx8mp_src_init(Object *obj)
++{
++    IMX8MPSRCState *s = IMX8MP_SRC(obj);
++
++    memory_region_init_io(&s->iomem, obj, &imx8mp_src_ops, s,
++                          TYPE_IMX8MP_SRC, IMX8MP_SRC_MMIO_SIZE);
++    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
++}
++
++static const VMStateDescription vmstate_imx8mp_src = {
++    .name = TYPE_IMX8MP_SRC,
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT32_ARRAY(regs, IMX8MPSRCState, IMX8MP_SRC_MMIO_SIZE / 4),
++        VMSTATE_END_OF_LIST()
++    },
++};
++
++static void imx8mp_src_class_init(ObjectClass *klass, const void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++
++    device_class_set_legacy_reset(dc, imx8mp_src_reset);
++    dc->vmsd = &vmstate_imx8mp_src;
++    dc->desc = "i.MX 8M Plus System Reset Controller";
++}
++
++static const TypeInfo imx8mp_src_info = {
++    .name          = TYPE_IMX8MP_SRC,
++    .parent        = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(IMX8MPSRCState),
++    .instance_init = imx8mp_src_init,
++    .class_init    = imx8mp_src_class_init,
++};
++
++static void imx8mp_src_register_types(void)
++{
++    type_register_static(&imx8mp_src_info);
++}
++
++type_init(imx8mp_src_register_types)
+diff --git a/hw/misc/meson.build b/hw/misc/meson.build
+index b1d8d8e..f477f08 100644
+--- a/hw/misc/meson.build
++++ b/hw/misc/meson.build
+@@ -57,6 +57,7 @@ system_ss.add(when: 'CONFIG_ECCMEMCTL', if_true: files('eccmemctl.c'))
+ system_ss.add(when: 'CONFIG_EXYNOS4', if_true: files('exynos4210_pmu.c', 'exynos4210_clk.c', 'exynos4210_rng.c'))
+ system_ss.add(when: 'CONFIG_FSL_IMX8MP_ANALOG', if_true: files('imx8mp_analog.c'))
+ system_ss.add(when: 'CONFIG_FSL_IMX8MP_CCM', if_true: files('imx8mp_ccm.c'))
++system_ss.add(when: 'CONFIG_FSL_IMX8MP_PM', if_true: files('imx8mp_gpc.c', 'imx8mp_src.c'))
+ system_ss.add(when: 'CONFIG_IMX', if_true: files(
+   'imx25_ccm.c',
+   'imx31_ccm.c',
+diff --git a/include/hw/misc/imx8mp_gpc.h b/include/hw/misc/imx8mp_gpc.h
+new file mode 100644
+index 0000000..da37f11
+--- /dev/null
++++ b/include/hw/misc/imx8mp_gpc.h
+@@ -0,0 +1,25 @@
++/*
++ * i.MX 8M Plus General Power Controller (GPC)
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef IMX8MP_GPC_H
++#define IMX8MP_GPC_H
++
++#include "hw/sysbus.h"
++#include "qom/object.h"
++
++#define TYPE_IMX8MP_GPC "imx8mp.gpc"
++OBJECT_DECLARE_SIMPLE_TYPE(IMX8MPGPCState, IMX8MP_GPC)
++
++#define IMX8MP_GPC_MMIO_SIZE 0x10000
++
++struct IMX8MPGPCState {
++    SysBusDevice parent_obj;
++
++    MemoryRegion iomem;
++    uint32_t regs[IMX8MP_GPC_MMIO_SIZE / 4];
++};
++
++#endif /* IMX8MP_GPC_H */
+diff --git a/include/hw/misc/imx8mp_src.h b/include/hw/misc/imx8mp_src.h
+new file mode 100644
+index 0000000..ba3c273
+--- /dev/null
++++ b/include/hw/misc/imx8mp_src.h
+@@ -0,0 +1,25 @@
++/*
++ * i.MX 8M Plus System Reset Controller (SRC)
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef IMX8MP_SRC_H
++#define IMX8MP_SRC_H
++
++#include "hw/sysbus.h"
++#include "qom/object.h"
++
++#define TYPE_IMX8MP_SRC "imx8mp.src"
++OBJECT_DECLARE_SIMPLE_TYPE(IMX8MPSRCState, IMX8MP_SRC)
++
++#define IMX8MP_SRC_MMIO_SIZE 0x10000
++
++struct IMX8MPSRCState {
++    SysBusDevice parent_obj;
++
++    MemoryRegion iomem;
++    uint32_t regs[IMX8MP_SRC_MMIO_SIZE / 4];
++};
++
++#endif /* IMX8MP_SRC_H */
+-- 
+2.43.0
+

@@ -1,0 +1,25 @@
+# Shield SIL in a container. Use ./sil (see docker/README.md); it wraps
+# `docker compose run` so every command gets the same environment.
+services:
+  sil:
+    # Context is the checkout (the QEMU stage needs qemu/); .dockerignore keeps
+    # build outputs out of it.
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: shield-sil-host:local
+    # Root inside the container: network namespaces, taps, the CPU-cap cgroup and the
+    # Ubuntu image build (file owners, setuid bits) all need it. Each container has its
+    # own network namespace, so a test run and a long-running `./sil up` never collide.
+    privileged: true
+    init: true
+    volumes:
+      - .:/work
+      # The OpenWrt builder pulls the official openwrt/* images with the host's Docker.
+      - /var/run/docker.sock:/var/run/docker.sock
+    devices:
+      - /dev/net/tun
+    environment:
+      - SIL_IMAGE
+      - SIL_SET
+      - SIL_INTERNET

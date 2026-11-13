@@ -1,0 +1,89 @@
+From 4b8d3972343906b902f401c8f6f259e8f090f53c Mon Sep 17 00:00:00 2001
+From: SquadronConsult <michael@defense-dna.com>
+Date: Tue, 10 Nov 2026 05:16:58 +0000
+Subject: [PATCH 6/7] hw/sd/sdhci: implement Auto CMD23 and map the i.MX uSDHC
+ AC23EN bit
+
+Linux sdhci-esdhc-imx enables Auto CMD23 for eMMC multi-block transfers.
+QEMU dropped the bit (TRNMOD mask 0x37, i.MX MIX_CTRL bit 7 not mapped), so
+no SET_BLOCK_COUNT was sent and the card stayed in receive-data state after
+CMD25, leaving Linux stuck polling for busy.
+---
+ hw/sd/sdhci-internal.h |  2 +-
+ hw/sd/sdhci.c          | 27 ++++++++++++++++++++++++---
+ 2 files changed, 25 insertions(+), 4 deletions(-)
+
+diff --git a/hw/sd/sdhci-internal.h b/hw/sd/sdhci-internal.h
+index 9f768c4..ca39621 100644
+--- a/hw/sd/sdhci-internal.h
++++ b/hw/sd/sdhci-internal.h
+@@ -46,7 +46,7 @@
+ #define SDHC_TRNS_ACMD23               0x0008 /* since v3 */
+ #define SDHC_TRNS_READ                 0x0010
+ #define SDHC_TRNS_MULTI                0x0020
+-#define SDHC_TRNMOD_MASK               0x0037
++#define SDHC_TRNMOD_MASK               0x003f
+ 
+ /* R/W Command Register 0x0 */
+ #define SDHC_CMDREG                    0x0E
+diff --git a/hw/sd/sdhci.c b/hw/sd/sdhci.c
+index 09e9ebf..62c1e6d 100644
+--- a/hw/sd/sdhci.c
++++ b/hw/sd/sdhci.c
+@@ -345,6 +345,21 @@ static void sdhci_send_command(SDHCIState *s)
+     request.cmd = s->cmdreg >> 8;
+     request.arg = s->argument;
+ 
++    /*
++     * Auto CMD23 (SDHCI v3): before a multiple-block data command, the host
++     * sends SET_BLOCK_COUNT with the count from the Argument 2 register, so
++     * the card ends the transfer on its own. Without it an eMMC stays in its
++     * data state after the last block.
++     */
++    if ((s->trnmod & SDHC_TRNS_ACMD23) && (s->trnmod & SDHC_TRNS_MULTI) &&
++        (s->cmdreg & SDHC_CMD_DATA_PRESENT)) {
++        SDRequest set_count = { .cmd = 23, .arg = s->sdmasysad };
++        uint8_t rsp[16];
++
++        trace_sdhci_send_command(set_count.cmd, set_count.arg);
++        sdbus_do_command(&s->sdbus, &set_count, rsp, sizeof(rsp));
++    }
++
+     trace_sdhci_send_command(request.cmd, request.arg);
+     rlen = sdbus_do_command(&s->sdbus, &request, response, sizeof(response));
+ 
+@@ -1640,6 +1655,7 @@ static void sdhci_bus_class_init(ObjectClass *klass, const void *data)
+ /* --- qdev i.MX eSDHC --- */
+ 
+ #define USDHC_MIX_CTRL                  0x48
++#define USDHC_MIX_CTRL_AC23EN           (1 << 7)
+ 
+ #define USDHC_VENDOR_SPEC               0xc0
+ #define USDHC_IMX_FRC_SDCLK_ON          (1 << 8)
+@@ -1831,15 +1847,20 @@ usdhc_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
+          * into a write to ESDHC_MIX_CTRL, so we do the opposite in
+          * order to get where we started
+          *
+-         * Note that Auto CMD23 Enable bit is located in a wrong place
+-         * on i.MX, but since it is not used by QEMU we do not care.
++         * Auto CMD23 Enable is bit 7 on i.MX (bit 3 is DDR_EN there), so
++         * move it to where the SDHCI core expects it.
+          *
+          * We don't want to call sdhci_write(.., SDHC_TRNMOD, ...)
+          * here because it will result in a call to
+          * sdhci_send_command(s) which we don't want.
+          *
+          */
+-        s->trnmod = value & UINT16_MAX;
++        s->trnmod = value & (SDHC_TRNS_DMA | SDHC_TRNS_BLK_CNT_EN |
++                             SDHC_TRNS_ACMD12 | SDHC_TRNS_READ |
++                             SDHC_TRNS_MULTI);
++        if (value & USDHC_MIX_CTRL_AC23EN) {
++            s->trnmod |= SDHC_TRNS_ACMD23;
++        }
+         break;
+     case SDHC_TRNMOD:
+         /*
+-- 
+2.43.0
+

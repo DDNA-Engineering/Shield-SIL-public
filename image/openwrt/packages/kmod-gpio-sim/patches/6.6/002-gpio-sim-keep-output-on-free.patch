@@ -1,0 +1,24 @@
+gpio-sim: a released output line keeps driving its last level
+
+Upstream gpio-sim returns every line to its pull when the consumer releases
+it. A real SoC GPIO (i.MX8M Plus on Shield) keeps driving an output after
+release, so a script that sets a line and exits (`gpioset --toggle 0 ...`)
+behaves as on hardware. Inputs still return to their pull.
+
+--- a/gpio-sim-main.c
++++ b/gpio-sim-main.c
+@@ -209,9 +209,11 @@
+ {
+ 	struct gpio_sim_chip *chip = gpiochip_get_data(gc);
+ 
+-	scoped_guard(mutex, &chip->lock)
+-		__assign_bit(offset, chip->value_map,
+-			     !!test_bit(offset, chip->pull_map));
++	scoped_guard(mutex, &chip->lock) {
++		if (test_bit(offset, chip->direction_map))
++			__assign_bit(offset, chip->value_map,
++				     !!test_bit(offset, chip->pull_map));
++	}
+ }
+ 
+ static ssize_t gpio_sim_sysfs_val_show(struct device *dev,

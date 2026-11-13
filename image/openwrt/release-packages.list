@@ -1,0 +1,4 @@
+# Packages that make an ImageBuilder image match the official release image.
+# The ImageBuilder's defaults leave out LuCI (and rpcd), which the release
+# builds add. Used by images without the Shield package set (23.05.6).
+luci

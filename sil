@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# One command for the Shield SIL in a container (Docker on Linux, or Docker in WSL2).
+#
+#   ./sil all   [image]          unit tests, build the image, boot it, system tests
+#   ./sil build [image...|--all] build guest images (default: the profile's image)
+#   ./sil test  [image] [pytest args]   system tests against one image (builds it if missing)
+#   ./sil unit                   unit tests (no VM)
+#   ./sil up    [image] [--internet]  boot the emulated Shield and keep it running (Ctrl-C stops);
+#                                --internet: its uplinks use this machine's real internet
+#   ./sil ssh   [cmd...]         root shell (or a command) on the running Shield, from its LAN (OpenWrt)
+#   ./sil lan   [cmd...]         shell (or a command) on the simulated LAN client
+#   ./sil button [seconds]       press the front-panel button (default 0.3 s; long press: e.g. 3)
+#   ./sil images               the image catalog and what's built
+#   ./sil shell                  a shell in the SIL container
+#
+# Everything streams to this terminal. Build outputs stay in ./build (git-ignored).
+set -euo pipefail
+cd "$(dirname "$0")"
+
+UP=shield-sil-up            # container name of the long-running `./sil up`
+DEFAULT_IMAGE=openwrt-24.10.3
+
+ensure_host_image() {
+	docker compose build -q sil
+}
+
+# run [compose-run flags] sil <cmd...>: a fresh SIL container with the checkout at /work.
+run() {
+	local flags=()
+	[ -t 0 ] && [ -t 1 ] || flags+=(-T)
+	docker compose run --rm "${flags[@]}" "$@"
+}
+
+# Built: the manifest, kernel and root filesystem, and for eMMC images U-Boot and the eMMC.
+built() {
+	local d="build/images/$1"
+	[ -f "$d/image.json" ] && [ -f "$d/rootfs.ext4" ] && [ -f "$d/kernel.bin" ] || return 1
+	grep -q '"storage": "emmc"' "$d/image.json" || return 0
+	[ -f "$d/emmc.img" ] && [ -f "$d/u-boot.bin" ]
+}
+
+build() { run sil image/build.sh "$@"; }
+
+system_tests() {
+	local image="$1"; shift
+	built "$image" || build "$image"
+	run sil python -m pytest tests/system -v -rs --sil-image "$image" "$@"
+}
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+	build)   ensure_host_image; build "$@" ;;
+	unit)    ensure_host_image; run sil python -m pytest tests/unit -q ;;
+	test)    ensure_host_image; image="${1:-$DEFAULT_IMAGE}"; shift || true; system_tests "$image" "$@" ;;
+	all)     ensure_host_image; image="${1:-$DEFAULT_IMAGE}"
+	         run sil python -m pytest tests/unit -q
+	         system_tests "$image" ;;
+	up)      image="" opts=()
+	         for a in "$@"; do
+	           case "$a" in
+	             --internet) opts+=(--internet) ;;
+	             -*) echo "unknown option for up: $a (./sil help)" >&2; exit 2 ;;
+	             *)  image="$a" ;;
+	           esac
+	         done
+	         image="${image:-$DEFAULT_IMAGE}"
+	         ensure_host_image
+	         built "$image" || build "$image"
+	         docker rm -f "$UP" >/dev/null 2>&1 || true
+	         run --name "$UP" sil python -m shield_sil.cli --image "$image" "${opts[@]}" up ;;
+	# The serial console is held by the harness (QEMU serves one client), so use SSH
+	# from the LAN client; OpenWrt's default root login has no password.
+	button)  docker exec "$UP" python3 -m shield_sil.cli ctl button "${1:-0.3}" ;;
+	ssh)     t=(); [ -t 0 ] && [ -t 1 ] && t=(-it)
+	         docker exec "${t[@]}" "$UP" ip netns exec sil0-lan ssh -q -o StrictHostKeyChecking=no \
+	           -o UserKnownHostsFile=/dev/null root@192.168.100.1 "$@" ;;
+	lan)     if [ $# -eq 0 ]; then docker exec -it "$UP" ip netns exec sil0-lan bash
+	         else docker exec "$UP" ip netns exec sil0-lan "$@"; fi ;;
+	images)  ensure_host_image; run sil image/build.sh --list ;;
+	shell)   ensure_host_image; run sil bash ;;
+	help|-h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
+	*)       echo "unknown command: $cmd (./sil help)" >&2; exit 2 ;;
+esac
